@@ -1,5 +1,5 @@
 import os, shlex, subprocess, tempfile, textwrap, time, socket, traceback, atexit, signal, uuid
-
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.error import NetworkError, TimedOut
@@ -81,7 +81,7 @@ def acquire_mongo_lock():
         return False
 
 def heartbeat_mongo():
-    if not _mongo_lock_coll:
+    if _mongo_lock_coll is None:
         return
     try:
         _mongo_lock_coll.update_one(
@@ -94,7 +94,7 @@ def heartbeat_mongo():
 
 def release_mongo_lock():
     try:
-        if _mongo_lock_coll:
+        if _mongo_lock_coll is not None:
             _mongo_lock_coll.delete_one({"key": LOCK_KEY, "instance": INSTANCE_ID})
     except Exception:
         pass
@@ -124,7 +124,7 @@ def setup_locks_or_exit():
     signal.signal(signal.SIGTERM, _cleanup)
 
     # Heartbeat רק אם Mongo פעיל
-    if _mongo_lock_coll:
+    if _mongo_lock_coll is not None:
         import threading
         def _hb():
             while True:
@@ -247,6 +247,14 @@ def main():
     app.add_handler(CommandHandler("health", health_cmd))
     app.add_handler(CommandHandler("restart", restart_cmd))
 
+    async def _preflight(app):
+        try:
+            await app.bot.delete_webhook(drop_pending_updates=True)
+        except Exception:
+            pass
+
+    asyncio.run(_preflight(app))
+
     while True:
         try:
             app.run_polling(drop_pending_updates=True, poll_interval=1.5, timeout=10)
@@ -254,8 +262,9 @@ def main():
             print(f"⚠️ בעיית רשת: {e}. מנסה שוב בעוד 10 שנ׳…")
             time.sleep(10)
         except Exception:
+            tb = traceback.format_exc()
             try:
-                app.bot.send_message(chat_id=OWNER_ID, text=f"⚠️ קריסה:\n{traceback.format_exc()}")
+                asyncio.run(app.bot.send_message(chat_id=OWNER_ID, text=f"⚠️ קריסה:\n{tb}"))
             except Exception:
                 pass
             time.sleep(10)
