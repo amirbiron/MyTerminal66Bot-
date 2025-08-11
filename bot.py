@@ -9,7 +9,7 @@ OWNER_ID   = int(os.getenv("OWNER_ID", "6865105071"))
 TIMEOUT    = int(os.getenv("CMD_TIMEOUT", "8"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "3500"))
 ALLOWED_CMDS = set((os.getenv("ALLOWED_CMDS") or
-    "echo,date,uname,uptime,ls,pwd,whoami,df,free,id,ps"
+    "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env"
 ).split(","))
 
 # ==== עזר ====
