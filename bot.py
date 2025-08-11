@@ -69,7 +69,21 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
             responses.append(f"$ {' '.join(parts)}\n\n⏱️ Timeout")
 
     combined = "\n\n".join(responses) if responses else "(no output)"
-    await update.message.reply_text(truncate(combined))
+
+    if len(combined) <= MAX_OUTPUT:
+        await update.message.reply_text(combined)
+    else:
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
+                tf.write(combined)
+                tmp_path = tf.name
+            with open(tmp_path, "rb") as fh:
+                await update.message.reply_document(fh, filename="output.txt", caption="📄 פלט גדול נשלח כקובץ")
+        finally:
+            try:
+                if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
+            except: pass
 
 async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not allowed(update): return
@@ -85,7 +99,19 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
                            env={"PYTHONUNBUFFERED":"1"})
         out = p.stdout or "(no output)"
         if p.stderr: out += "\nERR:\n" + p.stderr
-        await update.message.reply_text(truncate(out))
+        if len(out) <= MAX_OUTPUT:
+            await update.message.reply_text(out)
+        else:
+            big_tmp = None
+            try:
+                with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf2:
+                    tf2.write(out); big_tmp = tf2.name
+                with open(big_tmp, "rb") as fh:
+                    await update.message.reply_document(fh, filename="py-output.txt", caption="📄 פלט גדול נשלח כקובץ")
+            finally:
+                try:
+                    if big_tmp and os.path.exists(big_tmp): os.remove(big_tmp)
+                except: pass
     finally:
         try:
             if tmp and os.path.exists(tmp): os.remove(tmp)
