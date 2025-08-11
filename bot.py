@@ -9,7 +9,7 @@ OWNER_ID   = int(os.getenv("OWNER_ID", "6865105071"))
 TIMEOUT    = int(os.getenv("CMD_TIMEOUT", "8"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "3500"))
 ALLOWED_CMDS = set((os.getenv("ALLOWED_CMDS") or
-    "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env"
+    "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env,git,python,python3,pip,pip3,poetry,uv,pytest,go,rustc,cargo,node,npm,npx,tsc,deno,zip,unzip,7z,tar,tee,yes,xargs,printf,kill,killall,bash,sh,chmod,chown,chgrp,df,du"
 ).split(","))
 
 # ==== עזר ====
@@ -29,19 +29,47 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not allowed(update): return
     cmdline = update.message.text.partition(" ")[2].strip()
     if not cmdline: return await update.message.reply_text("שימוש: /sh <פקודה>")
-    parts = shlex.split(cmdline)
-    if not parts:  return await update.message.reply_text("❗ אין פקודה")
-    if parts[0] not in ALLOWED_CMDS:
-        return await update.message.reply_text(f"❗ '{parts[0]}' לא מאושר")
-    try:
-        p = subprocess.run(parts, capture_output=True, text=True, timeout=TIMEOUT)
-        out = p.stdout or ""
-        err = p.stderr
-        resp = f"$ {' '.join(parts)}\n\n{out}"
-        if err: resp += "\nERR:\n" + err
-        await update.message.reply_text(truncate(resp))
-    except subprocess.TimeoutExpired:
-        await update.message.reply_text("⏱️ Timeout")
+
+    # Split input into commands by ';' or newlines, respecting quotes
+    lexer = shlex.shlex(cmdline, posix=True)
+    lexer.whitespace = ';\n'
+    lexer.whitespace_split = True
+    lexer.commenters = ''
+    raw_commands = [segment.strip() for segment in lexer if segment.strip()]
+
+    if not raw_commands:
+        return await update.message.reply_text("❗ אין פקודה")
+
+    responses = []
+
+    for raw in raw_commands:
+        try:
+            parts = shlex.split(raw)
+        except ValueError:
+            responses.append(f"$ {raw}\n\n❗ שגיאת פרסינג")
+            continue
+
+        if not parts:
+            continue
+
+        cmd_name = parts[0]
+        if cmd_name not in ALLOWED_CMDS:
+            responses.append(f"❗ פקודה לא מאושרת: {cmd_name}")
+            continue
+
+        try:
+            p = subprocess.run(parts, capture_output=True, text=True, timeout=TIMEOUT)
+            out = p.stdout or ""
+            err = p.stderr
+            resp = f"$ {' '.join(parts)}\n\n{out}"
+            if err:
+                resp += "\nERR:\n" + err
+            responses.append(resp.strip() or "(no output)")
+        except subprocess.TimeoutExpired:
+            responses.append(f"$ {' '.join(parts)}\n\n⏱️ Timeout")
+
+    combined = "\n\n".join(responses) if responses else "(no output)"
+    await update.message.reply_text(truncate(combined))
 
 async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not allowed(update): return
