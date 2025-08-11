@@ -1,4 +1,5 @@
 import os, shlex, subprocess, tempfile, textwrap, time, socket, asyncio
+import zipfile
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -40,13 +41,13 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not raw_commands:
         return await update.message.reply_text("❗ אין פקודה")
 
-    responses = []
+    responses = []  # list of (title, content)
 
     for raw in raw_commands:
         try:
             parts = shlex.split(raw)
         except ValueError:
-            responses.append(f"$ {raw}\n\n❗ שגיאת פרסינג")
+            responses.append((raw, f"$ {raw}\n\n❗ שגיאת פרסינג"))
             continue
 
         if not parts:
@@ -54,7 +55,7 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
         cmd_name = parts[0]
         if cmd_name not in ALLOWED_CMDS:
-            responses.append(f"❗ פקודה לא מאושרת: {cmd_name}")
+            responses.append((raw, f"❗ פקודה לא מאושרת: {cmd_name}"))
             continue
 
         try:
@@ -64,19 +65,58 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
             resp = f"$ {' '.join(parts)}\n\n{out}"
             if err:
                 resp += "\nERR:\n" + err
-            responses.append(resp.strip() or "(no output)")
+            responses.append((' '.join(parts), resp.strip() or "(no output)"))
         except subprocess.TimeoutExpired:
-            responses.append(f"$ {' '.join(parts)}\n\n⏱️ Timeout")
+            responses.append((' '.join(parts), f"$ {' '.join(parts)}\n\n⏱️ Timeout"))
 
-    combined = "\n\n".join(responses) if responses else "(no output)"
+    if not responses:
+        return await update.message.reply_text("(no output)")
 
-    if len(combined) <= MAX_OUTPUT:
-        await update.message.reply_text(combined)
+    # אם יש יותר מפקודה אחת – נאגד כברירת מחדל לקובץ ZIP
+    if len(responses) > 1:
+        tmp_zip = None
+        tmp_dir_obj = None
+        try:
+            tmp_dir_obj = tempfile.TemporaryDirectory()
+            tmp_dir = tmp_dir_obj.name
+
+            def safe_name(title: str) -> str:
+                base = ''.join(ch if ch.isalnum() or ch in ('-', '_', '.', ' ') else '_' for ch in (title or 'cmd'))
+                base = base.strip().replace(' ', '_')
+                return (base or 'cmd')[:40]
+
+            for idx, (title, content) in enumerate(responses, start=1):
+                fname = f"{idx:03d}-{safe_name(title)}.txt"
+                fpath = os.path.join(tmp_dir, fname)
+                with open(fpath, 'w') as fh:
+                    fh.write(content)
+
+            with tempfile.NamedTemporaryFile("wb", suffix=".zip", delete=False) as zf:
+                tmp_zip = zf.name
+            with zipfile.ZipFile(tmp_zip, 'w', compression=zipfile.ZIP_DEFLATED) as z:
+                for name in sorted(os.listdir(tmp_dir)):
+                    z.write(os.path.join(tmp_dir, name), arcname=name)
+
+            with open(tmp_zip, 'rb') as fh:
+                await update.message.reply_document(fh, filename="sh-bundle.zip", caption="📦 פלט מרובה נשלח כ־ZIP")
+        finally:
+            try:
+                if tmp_zip and os.path.exists(tmp_zip): os.remove(tmp_zip)
+            except: pass
+            try:
+                if tmp_dir_obj: tmp_dir_obj.cleanup()
+            except: pass
+        return
+
+    # פקודה אחת – שמירה על ההתנהגות הקודמת
+    only = responses[0][1]
+    if len(only) <= MAX_OUTPUT:
+        await update.message.reply_text(only)
     else:
         tmp_path = None
         try:
             with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
-                tf.write(combined)
+                tf.write(only)
                 tmp_path = tf.name
             with open(tmp_path, "rb") as fh:
                 await update.message.reply_document(fh, filename="output.txt", caption="📄 פלט גדול נשלח כקובץ")
