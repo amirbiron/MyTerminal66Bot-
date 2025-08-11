@@ -7,7 +7,7 @@ from telegram.error import NetworkError, TimedOut, Conflict
 # ==== תצורה ====
 OWNER_ID   = int(os.getenv("OWNER_ID", "6865105071"))
 TIMEOUT    = int(os.getenv("CMD_TIMEOUT", "60"))
-MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "3500"))
+MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
 ALLOWED_CMDS = set((os.getenv("ALLOWED_CMDS") or
     "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env,git,python,python3,pip,pip3,poetry,uv,pytest,go,rustc,cargo,node,npm,npx,tsc,deno,zip,unzip,7z,tar,tee,yes,xargs,printf,kill,killall,bash,sh,chmod,chown,chgrp,df,du,make,gcc,g++,javac,java,ssh,scp"
 ).split(","))
