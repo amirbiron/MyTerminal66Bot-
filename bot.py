@@ -31,57 +31,39 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     cmdline = update.message.text.partition(" ")[2].strip()
     if not cmdline: return await update.message.reply_text("שימוש: /sh <פקודה>")
 
-    # Split input into commands by ';' or newlines, respecting quotes
-    lexer = shlex.shlex(cmdline, posix=True)
-    lexer.whitespace = ';\n'
-    lexer.whitespace_split = True
-    lexer.commenters = ''
-    raw_commands = [segment.strip() for segment in lexer if segment.strip()]
+    # Detect chaining; if multiple commands are present, skip ALLOWED_CMDS validation
+    is_multi = (";" in cmdline) or ("&&" in cmdline) or ("\n" in cmdline)
 
-    if not raw_commands:
-        return await update.message.reply_text("❗ אין פקודה")
-
-    responses = []  # list of (title, content)
-
-    for raw in raw_commands:
+    if not is_multi:
         try:
-            parts = shlex.split(raw)
+            parts = shlex.split(cmdline, posix=True)
         except ValueError:
-            responses.append((raw, f"$ {raw}\n\n❗ שגיאת פרסינג"))
-            continue
-
+            return await update.message.reply_text("❗ שגיאת פרסינג")
         if not parts:
-            continue
-
+            return await update.message.reply_text("❗ אין פקודה")
         cmd_name = parts[0]
         if cmd_name not in ALLOWED_CMDS:
-            responses.append((raw, f"❗ פקודה לא מאושרת: {cmd_name}"))
-            continue
+            return await update.message.reply_text(f"❗ פקודה לא מאושרת: {cmd_name}")
 
-        try:
-            p = subprocess.run(parts, capture_output=True, text=True, timeout=TIMEOUT)
-            out = p.stdout or ""
-            err = p.stderr
-            resp = f"$ {' '.join(parts)}\n\n{out}"
-            if err:
-                resp += "\nERR:\n" + err
-            responses.append((' '.join(parts), resp.strip() or "(no output)"))
-        except subprocess.TimeoutExpired:
-            responses.append((' '.join(parts), f"$ {' '.join(parts)}\n\n⏱️ Timeout"))
+    # Execute the full line in a shell, so ';' and '&&' work as expected
+    try:
+        p = subprocess.run(cmdline, shell=True, capture_output=True, text=True, timeout=TIMEOUT)
+        out = p.stdout or ""
+        err = p.stderr or ""
+        resp = f"$ {cmdline}\n\n{out}"
+        if err:
+            resp += "\nERR:\n" + err
+        resp = resp.strip() or "(no output)"
+    except subprocess.TimeoutExpired:
+        resp = f"$ {cmdline}\n\n⏱️ Timeout"
 
-    if not responses:
-        return await update.message.reply_text("(no output)")
-
-    # Aggregate all outputs into one message by default
-    combined = "\n\n".join(content for _, content in responses)
-
-    if len(combined) <= MAX_OUTPUT:
-        await update.message.reply_text(combined)
+    if len(resp) <= MAX_OUTPUT:
+        await update.message.reply_text(resp)
     else:
         tmp_path = None
         try:
             with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
-                tf.write(combined)
+                tf.write(resp)
                 tmp_path = tf.name
             with open(tmp_path, "rb") as fh:
                 await update.message.reply_document(fh, filename="output.txt", caption="📄 פלט גדול נשלח כקובץ")
