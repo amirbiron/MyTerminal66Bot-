@@ -1,4 +1,5 @@
 import os, shlex, subprocess, tempfile, textwrap, time, socket, asyncio
+import zipfile
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -6,10 +7,10 @@ from telegram.error import NetworkError, TimedOut, Conflict
 
 # ==== תצורה ====
 OWNER_ID   = int(os.getenv("OWNER_ID", "6865105071"))
-TIMEOUT    = int(os.getenv("CMD_TIMEOUT", "8"))
-MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "3500"))
+TIMEOUT    = int(os.getenv("CMD_TIMEOUT", "60"))
+MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
 ALLOWED_CMDS = set((os.getenv("ALLOWED_CMDS") or
-    "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env"
+    "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env,git,python,python3,pip,pip3,poetry,uv,pytest,go,rustc,cargo,node,npm,npx,tsc,deno,zip,unzip,7z,tar,tee,yes,xargs,printf,kill,killall,bash,sh,chmod,chown,chgrp,df,du,make,gcc,g++,javac,java,ssh,scp"
 ).split(","))
 
 # ==== עזר ====
@@ -29,19 +30,65 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not allowed(update): return
     cmdline = update.message.text.partition(" ")[2].strip()
     if not cmdline: return await update.message.reply_text("שימוש: /sh <פקודה>")
-    parts = shlex.split(cmdline)
-    if not parts:  return await update.message.reply_text("❗ אין פקודה")
-    if parts[0] not in ALLOWED_CMDS:
-        return await update.message.reply_text(f"❗ '{parts[0]}' לא מאושר")
-    try:
-        p = subprocess.run(parts, capture_output=True, text=True, timeout=TIMEOUT)
-        out = p.stdout or ""
-        err = p.stderr
-        resp = f"$ {' '.join(parts)}\n\n{out}"
-        if err: resp += "\nERR:\n" + err
-        await update.message.reply_text(truncate(resp))
-    except subprocess.TimeoutExpired:
-        await update.message.reply_text("⏱️ Timeout")
+
+    # Split input into commands by ';' or newlines, respecting quotes
+    lexer = shlex.shlex(cmdline, posix=True)
+    lexer.whitespace = ';\n'
+    lexer.whitespace_split = True
+    lexer.commenters = ''
+    raw_commands = [segment.strip() for segment in lexer if segment.strip()]
+
+    if not raw_commands:
+        return await update.message.reply_text("❗ אין פקודה")
+
+    responses = []  # list of (title, content)
+
+    for raw in raw_commands:
+        try:
+            parts = shlex.split(raw)
+        except ValueError:
+            responses.append((raw, f"$ {raw}\n\n❗ שגיאת פרסינג"))
+            continue
+
+        if not parts:
+            continue
+
+        cmd_name = parts[0]
+        if cmd_name not in ALLOWED_CMDS:
+            responses.append((raw, f"❗ פקודה לא מאושרת: {cmd_name}"))
+            continue
+
+        try:
+            p = subprocess.run(parts, capture_output=True, text=True, timeout=TIMEOUT)
+            out = p.stdout or ""
+            err = p.stderr
+            resp = f"$ {' '.join(parts)}\n\n{out}"
+            if err:
+                resp += "\nERR:\n" + err
+            responses.append((' '.join(parts), resp.strip() or "(no output)"))
+        except subprocess.TimeoutExpired:
+            responses.append((' '.join(parts), f"$ {' '.join(parts)}\n\n⏱️ Timeout"))
+
+    if not responses:
+        return await update.message.reply_text("(no output)")
+
+    # Aggregate all outputs into one message by default
+    combined = "\n\n".join(content for _, content in responses)
+
+    if len(combined) <= MAX_OUTPUT:
+        await update.message.reply_text(combined)
+    else:
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
+                tf.write(combined)
+                tmp_path = tf.name
+            with open(tmp_path, "rb") as fh:
+                await update.message.reply_document(fh, filename="output.txt", caption="📄 פלט גדול נשלח כקובץ")
+        finally:
+            try:
+                if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
+            except: pass
 
 async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not allowed(update): return
@@ -57,7 +104,19 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
                            env={"PYTHONUNBUFFERED":"1"})
         out = p.stdout or "(no output)"
         if p.stderr: out += "\nERR:\n" + p.stderr
-        await update.message.reply_text(truncate(out))
+        if len(out) <= MAX_OUTPUT:
+            await update.message.reply_text(out)
+        else:
+            big_tmp = None
+            try:
+                with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf2:
+                    tf2.write(out); big_tmp = tf2.name
+                with open(big_tmp, "rb") as fh:
+                    await update.message.reply_document(fh, filename="py-output.txt", caption="📄 פלט גדול נשלח כקובץ")
+            finally:
+                try:
+                    if big_tmp and os.path.exists(big_tmp): os.remove(big_tmp)
+                except: pass
     finally:
         try:
             if tmp and os.path.exists(tmp): os.remove(tmp)
