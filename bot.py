@@ -72,51 +72,16 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not responses:
         return await update.message.reply_text("(no output)")
 
-    # אם יש יותר מפקודה אחת – נאגד כברירת מחדל לקובץ ZIP
-    if len(responses) > 1:
-        tmp_zip = None
-        tmp_dir_obj = None
-        try:
-            tmp_dir_obj = tempfile.TemporaryDirectory()
-            tmp_dir = tmp_dir_obj.name
+    # Aggregate all outputs into one message by default
+    combined = "\n\n".join(content for _, content in responses)
 
-            def safe_name(title: str) -> str:
-                base = ''.join(ch if ch.isalnum() or ch in ('-', '_', '.', ' ') else '_' for ch in (title or 'cmd'))
-                base = base.strip().replace(' ', '_')
-                return (base or 'cmd')[:40]
-
-            for idx, (title, content) in enumerate(responses, start=1):
-                fname = f"{idx:03d}-{safe_name(title)}.txt"
-                fpath = os.path.join(tmp_dir, fname)
-                with open(fpath, 'w') as fh:
-                    fh.write(content)
-
-            with tempfile.NamedTemporaryFile("wb", suffix=".zip", delete=False) as zf:
-                tmp_zip = zf.name
-            with zipfile.ZipFile(tmp_zip, 'w', compression=zipfile.ZIP_DEFLATED) as z:
-                for name in sorted(os.listdir(tmp_dir)):
-                    z.write(os.path.join(tmp_dir, name), arcname=name)
-
-            with open(tmp_zip, 'rb') as fh:
-                await update.message.reply_document(fh, filename="sh-bundle.zip", caption="📦 פלט מרובה נשלח כ־ZIP")
-        finally:
-            try:
-                if tmp_zip and os.path.exists(tmp_zip): os.remove(tmp_zip)
-            except: pass
-            try:
-                if tmp_dir_obj: tmp_dir_obj.cleanup()
-            except: pass
-        return
-
-    # פקודה אחת – שמירה על ההתנהגות הקודמת
-    only = responses[0][1]
-    if len(only) <= MAX_OUTPUT:
-        await update.message.reply_text(only)
+    if len(combined) <= MAX_OUTPUT:
+        await update.message.reply_text(combined)
     else:
         tmp_path = None
         try:
             with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
-                tf.write(only)
+                tf.write(combined)
                 tmp_path = tf.name
             with open(tmp_path, "rb") as fh:
                 await update.message.reply_document(fh, filename="output.txt", caption="📄 פלט גדול נשלח כקובץ")
