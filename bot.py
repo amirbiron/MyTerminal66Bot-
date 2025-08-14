@@ -119,7 +119,7 @@ async def restart_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     os._exit(0)
 
 # ==== main ====
-def main():
+async def main():
     # לוגים שקטים (רק ERROR) כדי למנוע ספאם
     import logging
     logging.basicConfig(level=logging.ERROR)
@@ -137,24 +137,25 @@ def main():
     app.add_handler(CommandHandler("restart", restart_cmd))
 
     # נקה webhook לפני polling כדי לצמצם בעיות היסטוריות
-    async def _preflight():
-        try: await app.bot.delete_webhook(drop_pending_updates=True)
-        except: pass
-    asyncio.run(_preflight())
+    try:
+        await app.bot.delete_webhook(drop_pending_updates=True)
+    except:
+        pass
 
     # ריצה שקטה: Conflict לא נפתר – רק לא מדפיס traceback
     while True:
         try:
-            app.run_polling(drop_pending_updates=True, poll_interval=1.5, timeout=10)
+            async with app:
+                await app.updater.start_polling(drop_pending_updates=True, poll_interval=1.5, timeout=10)
         except Conflict:
             # יש אינסטנס אחר – נצא בשקט בלי הדפסות
             break
         except (NetworkError, TimedOut):
-            time.sleep(8)  # רשת חלשה – ננסה שוב בשקט
+            await asyncio.sleep(8)  # רשת חלשה – ננסה שוב בשקט
             continue
         except Exception:
-            time.sleep(8)
+            await asyncio.sleep(8)
             continue
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
