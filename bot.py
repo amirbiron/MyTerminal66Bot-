@@ -1,5 +1,6 @@
 import os, shlex, subprocess, tempfile, textwrap, time, socket, asyncio
 import zipfile
+from activity_reporter import create_reporter
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -13,6 +14,13 @@ ALLOWED_CMDS = set((os.getenv("ALLOWED_CMDS") or
     "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env,git,python,python3,pip,pip3,poetry,uv,pytest,go,rustc,cargo,node,npm,npx,tsc,deno,zip,unzip,7z,tar,tee,yes,xargs,printf,kill,killall,bash,sh,chmod,chown,chgrp,df,du,make,gcc,g++,javac,java,ssh,scp"
 ).split(","))
 
+# ==== Reporter ====
+reporter = create_reporter(
+    mongodb_uri="mongodb+srv://mumin:M43M2TFgLfGvhBwY@muminai.tm6x81b.mongodb.net/?retryWrites=true&w=majority&appName=muminAI",
+    service_id="srv-d2d0dnc9c44c73b5d6q0",
+    service_name="MyTerminal66Bot"
+)
+
 # ==== עזר ====
 def allowed(u: Update) -> bool:
     return u.effective_user and u.effective_user.id == OWNER_ID
@@ -23,10 +31,12 @@ def truncate(s: str) -> str:
 
 # ==== פקודות ====
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    reporter.report_activity(update.effective_user.id)
     if not allowed(update): return
     await update.message.reply_text("/sh <פקודה>\n/py <קוד>\n/health\n/restart")
 
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    reporter.report_activity(update.effective_user.id)
     if not allowed(update): return
     cmdline = update.message.text.partition(" ")[2].strip()
     if not cmdline: return await update.message.reply_text("שימוש: /sh <פקודה>")
@@ -73,6 +83,7 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
             except: pass
 
 async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    reporter.report_activity(update.effective_user.id)
     if not allowed(update): return
     code = update.message.text.partition(" ")[2]
     if not code.strip(): return await update.message.reply_text("שימוש: /py <קוד>")
@@ -105,6 +116,7 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
         except: pass
 
 async def health_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    reporter.report_activity(update.effective_user.id)
     if not allowed(update): return
     try:
         socket.create_connection(("api.telegram.org", 443), timeout=3).close()
@@ -113,6 +125,7 @@ async def health_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ אין חיבור")
 
 async def restart_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    reporter.report_activity(update.effective_user.id)
     if not allowed(update): return
     await update.message.reply_text("🔄 Restart…")
     time.sleep(1)
