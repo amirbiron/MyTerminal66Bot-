@@ -119,7 +119,7 @@ async def restart_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     os._exit(0)
 
 # ==== main ====
-async def main():
+def main():
     # לוגים שקטים (רק ERROR) כדי למנוע ספאם
     import logging
     logging.basicConfig(level=logging.ERROR)
@@ -127,7 +127,8 @@ async def main():
         logging.getLogger(n).setLevel(logging.ERROR)
 
     token = os.getenv("BOT_TOKEN")
-    if not token: return
+    if not token:
+        return
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start",   start))
@@ -136,26 +137,12 @@ async def main():
     app.add_handler(CommandHandler("health",  health_cmd))
     app.add_handler(CommandHandler("restart", restart_cmd))
 
-    # נקה webhook לפני polling כדי לצמצם בעיות היסטוריות
+    # run_polling מבצע initialize/start ופותח polling בצורה בטוחה
     try:
-        await app.bot.delete_webhook(drop_pending_updates=True)
-    except:
+        app.run_polling(drop_pending_updates=True, poll_interval=1.5, timeout=10)
+    except Conflict:
+        # יש אינסטנס אחר – נצא בשקט בלי הדפסות
         pass
 
-    # ריצה שקטה: Conflict לא נפתר – רק לא מדפיס traceback
-    while True:
-        try:
-            async with app:
-                await app.updater.start_polling(drop_pending_updates=True, poll_interval=1.5, timeout=10)
-        except Conflict:
-            # יש אינסטנס אחר – נצא בשקט בלי הדפסות
-            break
-        except (NetworkError, TimedOut):
-            await asyncio.sleep(8)  # רשת חלשה – ננסה שוב בשקט
-            continue
-        except Exception:
-            await asyncio.sleep(8)
-            continue
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
