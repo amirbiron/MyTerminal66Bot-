@@ -4,12 +4,14 @@ from activity_reporter import create_reporter
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from telegram.error import NetworkError, TimedOut, Conflict
+from telegram.error import NetworkError, TimedOut, Conflict, BadRequest
+import sys
 
 # ==== תצורה ====
 OWNER_ID   = int(os.getenv("OWNER_ID", "6865105071"))
 TIMEOUT    = int(os.getenv("CMD_TIMEOUT", "60"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
+TG_MAX_MESSAGE = int(os.getenv("TG_MAX_MESSAGE", "4000"))
 ALLOWED_CMDS = set((os.getenv("ALLOWED_CMDS") or
     "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env,git,python,python3,pip,pip3,poetry,uv,pytest,go,rustc,cargo,node,npm,npx,tsc,deno,zip,unzip,7z,tar,tee,yes,xargs,printf,kill,killall,bash,sh,chmod,chown,chgrp,df,du,make,gcc,g++,javac,java,ssh,scp"
 ).split(","))
@@ -28,6 +30,30 @@ def allowed(u: Update) -> bool:
 def truncate(s: str) -> str:
     s = (s or "").strip() or "(no output)"
     return s if len(s) <= MAX_OUTPUT else s[:MAX_OUTPUT] + "\n…(truncated)"
+
+async def send_output(update: Update, text: str, filename: str):
+    """Send text safely. If it exceeds Telegram message limit or MAX_OUTPUT, send as a file."""
+    text = (text or "").strip() or "(no output)"
+    if len(text) <= min(MAX_OUTPUT, TG_MAX_MESSAGE):
+        try:
+            await update.message.reply_text(text)
+            return
+        except BadRequest:
+            # Fall back to document if Telegram rejects the message (e.g., too long)
+            pass
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
+            tf.write(text)
+            tmp_path = tf.name
+        with open(tmp_path, "rb") as fh:
+            await update.message.reply_document(fh, filename=filename, caption="📄 פלט גדול נשלח כקובץ")
+    finally:
+        try:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except:
+            pass
 
 # ==== פקודות ====
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -67,20 +93,7 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     except subprocess.TimeoutExpired:
         resp = f"$ {cmdline}\n\n⏱️ Timeout"
 
-    if len(resp) <= MAX_OUTPUT:
-        await update.message.reply_text(resp)
-    else:
-        tmp_path = None
-        try:
-            with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
-                tf.write(resp)
-                tmp_path = tf.name
-            with open(tmp_path, "rb") as fh:
-                await update.message.reply_document(fh, filename="output.txt", caption="📄 פלט גדול נשלח כקובץ")
-        finally:
-            try:
-                if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
-            except: pass
+    await send_output(update, resp, "output.txt")
 
 async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     reporter.report_activity(update.effective_user.id)
@@ -92,24 +105,20 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     try:
         with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tf:
             tf.write(cleaned); tmp = tf.name
-        p = subprocess.run(["python", "-I", "-S", tmp],
-                           capture_output=True, text=True, timeout=TIMEOUT,
-                           env={"PYTHONUNBUFFERED":"1"})
+        # Prefer the current interpreter; fallback to 'python3'/'python'
+        interpreter = sys.executable or "python3"
+        try_cmd = [interpreter, "-I", "-S", tmp]
+        try:
+            p = subprocess.run(try_cmd,
+                               capture_output=True, text=True, timeout=TIMEOUT,
+                               env={"PYTHONUNBUFFERED":"1"})
+        except FileNotFoundError:
+            p = subprocess.run(["python", "-I", "-S", tmp],
+                            capture_output=True, text=True, timeout=TIMEOUT,
+                            env={"PYTHONUNBUFFERED":"1"})
         out = p.stdout or "(no output)"
         if p.stderr: out += "\nERR:\n" + p.stderr
-        if len(out) <= MAX_OUTPUT:
-            await update.message.reply_text(out)
-        else:
-            big_tmp = None
-            try:
-                with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf2:
-                    tf2.write(out); big_tmp = tf2.name
-                with open(big_tmp, "rb") as fh:
-                    await update.message.reply_document(fh, filename="py-output.txt", caption="📄 פלט גדול נשלח כקובץ")
-            finally:
-                try:
-                    if big_tmp and os.path.exists(big_tmp): os.remove(big_tmp)
-                except: pass
+        await send_output(update, out, "py-output.txt")
     finally:
         try:
             if tmp and os.path.exists(tmp): os.remove(tmp)
