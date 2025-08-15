@@ -6,12 +6,14 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.error import NetworkError, TimedOut, Conflict, BadRequest
 import sys
+import json
 
 # ==== תצורה ====
 OWNER_ID   = int(os.getenv("OWNER_ID", "6865105071"))
 TIMEOUT    = int(os.getenv("CMD_TIMEOUT", "60"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
 TG_MAX_MESSAGE = int(os.getenv("TG_MAX_MESSAGE", "4000"))
+RESTART_NOTIFY_PATH = os.getenv("RESTART_NOTIFY_PATH", "/tmp/bot_restart_notify.json")
 ALLOWED_CMDS = set((os.getenv("ALLOWED_CMDS") or
     "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env,git,python,python3,pip,pip3,poetry,uv,pytest,go,rustc,cargo,node,npm,npx,tsc,deno,zip,unzip,7z,tar,tee,yes,xargs,printf,kill,killall,bash,sh,chmod,chown,chgrp,df,du,make,gcc,g++,javac,java,ssh,scp"
 ).split(","))
@@ -54,6 +56,25 @@ async def send_output(update: Update, text: str, filename: str):
                 os.remove(tmp_path)
         except:
             pass
+
+async def on_post_init(app: Application) -> None:
+    """נשלחת פעם אחת כשהבוט עלה. אם יש בקשת ריסטרט ממתינה, נודיע שהאתחול הסתיים."""
+    try:
+        if os.path.exists(RESTART_NOTIFY_PATH):
+            with open(RESTART_NOTIFY_PATH, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            chat_id = data.get("chat_id")
+            if chat_id:
+                try:
+                    await app.bot.send_message(chat_id=chat_id, text="✅ האתחול הסתיים")
+                finally:
+                    try:
+                        os.remove(RESTART_NOTIFY_PATH)
+                    except:
+                        pass
+    except Exception:
+        # אל נכשיל את ההרצה אם יש בעיית קובץ/הרשאות
+        pass
 
 # ==== פקודות ====
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -136,6 +157,16 @@ async def health_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 async def restart_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     reporter.report_activity(update.effective_user.id)
     if not allowed(update): return
+    try:
+        # נשמור את הצ'אט כדי להודיע אחרי עלייה
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        if chat_id:
+            tmp_dir = os.path.dirname(RESTART_NOTIFY_PATH) or "."
+            os.makedirs(tmp_dir, exist_ok=True)
+            with open(RESTART_NOTIFY_PATH, "w", encoding="utf-8") as fh:
+                json.dump({"chat_id": chat_id}, fh)
+    except Exception:
+        pass
     await update.message.reply_text("🔄 Restart…")
     time.sleep(1)
     os._exit(0)
@@ -153,7 +184,7 @@ def main():
         return
 
     while True:
-        app = Application.builder().token(token).build()
+        app = Application.builder().token(token).post_init(on_post_init).build()
         app.add_handler(CommandHandler("start",   start))
         app.add_handler(CommandHandler("sh",      sh_cmd))
         app.add_handler(CommandHandler("py",      py_cmd))
