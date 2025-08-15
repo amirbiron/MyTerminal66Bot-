@@ -135,27 +135,34 @@ async def restart_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 def main():
     # לוגים שקטים (רק ERROR) כדי למנוע ספאם
     import logging
-    logging.basicConfig(level=logging.ERROR)
+    logging.basicConfig(level=logging.CRITICAL)
     for n in ("telegram", "telegram.ext", "httpx"):
-        logging.getLogger(n).setLevel(logging.ERROR)
+        logging.getLogger(n).setLevel(logging.CRITICAL)
 
     token = os.getenv("BOT_TOKEN")
     if not token:
         return
 
-    app = Application.builder().token(token).build()
-    app.add_handler(CommandHandler("start",   start))
-    app.add_handler(CommandHandler("sh",      sh_cmd))
-    app.add_handler(CommandHandler("py",      py_cmd))
-    app.add_handler(CommandHandler("health",  health_cmd))
-    app.add_handler(CommandHandler("restart", restart_cmd))
+    while True:
+        app = Application.builder().token(token).build()
+        app.add_handler(CommandHandler("start",   start))
+        app.add_handler(CommandHandler("sh",      sh_cmd))
+        app.add_handler(CommandHandler("py",      py_cmd))
+        app.add_handler(CommandHandler("health",  health_cmd))
+        app.add_handler(CommandHandler("restart", restart_cmd))
 
-    # run_polling מבצע initialize/start ופותח polling בצורה בטוחה
-    try:
-        app.run_polling(drop_pending_updates=True, poll_interval=1.5, timeout=10)
-    except Conflict:
-        # יש אינסטנס אחר – נצא בשקט בלי הדפסות
-        pass
+        # run_polling מבצע initialize/start ופותח polling בצורה בטוחה
+        try:
+            app.run_polling(drop_pending_updates=True, poll_interval=1.5, timeout=10)
+        except Conflict:
+            # אינסטנס אחר רץ – נחכה וננסה שוב
+            time.sleep(int(os.getenv("CONFLICT_RETRY_DELAY", "120")))
+            continue
+        except (NetworkError, TimedOut):
+            # בעיות רשת זמניות – נחכה מעט וננסה שוב
+            time.sleep(5)
+            continue
+        break
 
 if __name__ == "__main__":
     main()
