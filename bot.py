@@ -25,12 +25,59 @@ MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
 TG_MAX_MESSAGE = int(os.getenv("TG_MAX_MESSAGE", "4000"))
 RESTART_NOTIFY_PATH = os.getenv("RESTART_NOTIFY_PATH", "/tmp/bot_restart_notify.json")
 
-ALLOWED_CMDS = set((
+def _parse_cmds_string(value: str) -> set:
+    """Parses comma/newline separated command names into a set, trimming blanks."""
+    if not value:
+        return set()
+    tokens = []
+    # Support both comma and newline separated formats
+    for part in value.replace("\r", "").replace("\n", ",").split(","):
+        tok = part.strip()
+        if tok:
+            tokens.append(tok)
+    return set(tokens)
+
+
+DEFAULT_ALLOWED_CMDS = _parse_cmds_string(
     os.getenv("ALLOWED_CMDS")
     or "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env,git,python,python3,pip,pip3,poetry,uv,pytest,go,rustc,cargo,node,npm,npx,tsc,deno,zip,unzip,7z,tar,tee,yes,xargs,printf,kill,killall,bash,sh,chmod,chown,chgrp,df,du,make,gcc,g++,javac,java,ssh,scp"
-).split(","))
+)
+
+# In-memory allowlist. Will be overridden from file if present.
+ALLOWED_CMDS = set(DEFAULT_ALLOWED_CMDS)
+
 ALLOW_ALL_COMMANDS = os.getenv("ALLOW_ALL_COMMANDS", "").lower() in ("1", "true", "yes", "on")
 SHELL_EXECUTABLE = os.getenv("SHELL_EXECUTABLE") or ("/bin/bash" if os.path.exists("/bin/bash") else None)
+ALLOWED_CMDS_FILE = os.getenv("ALLOWED_CMDS_FILE", "allowed_cmds.txt")
+
+
+def _serialize_cmds(cmds: set) -> str:
+    # Persist one-per-line for readability
+    return "\n".join(sorted(cmds))
+
+
+def load_allowed_cmds_from_file() -> None:
+    """Load allowed commands from file if it exists; otherwise keep current (env/default)."""
+    global ALLOWED_CMDS
+    try:
+        if os.path.exists(ALLOWED_CMDS_FILE):
+            with open(ALLOWED_CMDS_FILE, "r", encoding="utf-8") as fh:
+                content = fh.read()
+            parsed = _parse_cmds_string(content)
+            # If file exists but empty, treat as empty allowlist
+            ALLOWED_CMDS = set(parsed)
+    except Exception:
+        # If load fails, keep existing in-memory allowlist
+        pass
+
+
+def save_allowed_cmds_to_file() -> None:
+    try:
+        with open(ALLOWED_CMDS_FILE, "w", encoding="utf-8") as fh:
+            fh.write(_serialize_cmds(ALLOWED_CMDS))
+    except Exception:
+        # Do not crash on persistence issues
+        pass
 
 # ==== Reporter ====
 reporter = create_reporter(
@@ -101,6 +148,10 @@ async def send_output(update: Update, text: str, filename: str = "output.txt"):
                 os.remove(tmp_path)
         except Exception:
             pass
+
+
+# Load allowlist from file at import time (fallback to ENV/default already set)
+load_allowed_cmds_from_file()
 
 
 def handle_builtins(sess, cmdline: str):
@@ -182,7 +233,7 @@ async def on_post_init(app: Application) -> None:
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
     reporter.report_activity(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
-        return await update.message.reply_text("/sh <פקודת shell>\n/py <קוד פייתון>\n/health\n/restart\n/env\n/reset\n(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)")
+        return await update.message.reply_text("/sh <פקודת shell>\n/py <קוד פייתון>\n/health\n/restart\n/env\n/reset\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)")
 
 
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -201,18 +252,17 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if builtin_resp is not None:
         return await send_output(update, builtin_resp, "builtin.txt")
 
-    # נזהה chaining – אם יש, לא נבצע ולידציה מול ALLOWED_CMDS (מאפשר צינורות/ריבוי פקודות)
-    is_multi = (";" in cmdline) or ("&&" in cmdline) or ("\n" in cmdline) or ("|" in cmdline)
-    if not is_multi and not ALLOW_ALL_COMMANDS:
+    # אימות: אם ALLOW_ALL_COMMANDS פעיל – אין אימות. אחרת, תמיד מאמתים את הטוקן הראשון
+    if not ALLOW_ALL_COMMANDS:
         try:
             parts = shlex.split(cmdline, posix=True)
         except ValueError:
             return await update.message.reply_text("❗ שגיאת פרסינג")
         if not parts:
             return await update.message.reply_text("❗ אין פקודה")
-        cmd_name = parts[0]
-        if cmd_name not in ALLOWED_CMDS:
-            return await update.message.reply_text(f"❗ פקודה לא מאושרת: {cmd_name}")
+        first_token = parts[0].strip()
+        if first_token and first_token not in ALLOWED_CMDS:
+            return await update.message.reply_text(f"❗ פקודה לא מאושרת: {first_token}")
 
     # הרצה בשלם (תומך בצינורות/&&/;) בתוך shell
     try:
@@ -236,6 +286,66 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
         resp = f"$ {cmdline}\n\n⏱️ Timeout"
 
     await send_output(update, resp, "output.txt")
+
+
+def _parse_cmds_args(arg_text: str) -> set:
+    return _parse_cmds_string(arg_text)
+
+
+async def list_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return await update.message.reply_text("❌ אין הרשאה")
+    if not ALLOWED_CMDS:
+        return await update.message.reply_text("(רשימה ריקה)")
+    await update.message.reply_text(",".join(sorted(ALLOWED_CMDS)))
+
+
+async def allow_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return await update.message.reply_text("❌ אין הרשאה")
+    args = update.message.text.partition(" ")[2]
+    to_add = _parse_cmds_args(args)
+    if not to_add:
+        return await update.message.reply_text("שימוש: /allow cmd1,cmd2,...")
+    before = set(ALLOWED_CMDS)
+    ALLOWED_CMDS.update(to_add)
+    if ALLOWED_CMDS != before:
+        save_allowed_cmds_to_file()
+    await update.message.reply_text("נוספו: " + ",".join(sorted(to_add)))
+
+
+async def deny_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return await update.message.reply_text("❌ אין הרשאה")
+    args = update.message.text.partition(" ")[2]
+    to_remove = _parse_cmds_args(args)
+    if not to_remove:
+        return await update.message.reply_text("שימוש: /deny cmd1,cmd2,...")
+    changed = False
+    for c in to_remove:
+        if c in ALLOWED_CMDS:
+            ALLOWED_CMDS.discard(c)
+            changed = True
+    if changed:
+        save_allowed_cmds_to_file()
+    await update.message.reply_text("הוסרו: " + ",".join(sorted(to_remove)))
+
+
+async def update_allow_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return await update.message.reply_text("❌ אין הרשאה")
+    args = update.message.text.partition(" ")[2]
+    new_set = _parse_cmds_args(args)
+    if not new_set:
+        return await update.message.reply_text("שימוש: /update cmd1,cmd2,...")
+    global ALLOWED_CMDS
+    ALLOWED_CMDS = set(new_set)
+    save_allowed_cmds_to_file()
+    await update.message.reply_text("עודכן. כעת מאושרות: " + ",".join(sorted(ALLOWED_CMDS)))
 
 
 async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -359,6 +469,10 @@ def main():
         app.add_handler(CommandHandler("reset", reset_cmd))
         app.add_handler(CommandHandler("health", health_cmd))
         app.add_handler(CommandHandler("restart", restart_cmd))
+        app.add_handler(CommandHandler("list", list_cmd))
+        app.add_handler(CommandHandler("allow", allow_cmd))
+        app.add_handler(CommandHandler("deny", deny_cmd))
+        app.add_handler(CommandHandler("update", update_allow_cmd))
 
         try:
             app.run_polling(drop_pending_updates=True, poll_interval=1.5, timeout=10)
