@@ -139,7 +139,7 @@ def normalize_code(text: str) -> str:
     return text
 
 
-SAFE_PIP_NAME_RE = re.compile(r'^[a-zA-Z0-9_\-]+$')
+SAFE_PIP_NAME_RE = re.compile(r'^(?![.-])[a-zA-Z0-9_.-]+$')
 
 
 def install_package(package: str):
