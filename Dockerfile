@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
-    libatlas-base-dev \
     libblas-dev \
     liblapack-dev \
     libfreetype6-dev \
