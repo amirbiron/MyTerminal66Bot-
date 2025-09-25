@@ -13,16 +13,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
-    libatlas-base-dev \
     libblas-dev \
     liblapack-dev \
+    libopenblas-dev \
     libfreetype6-dev \
     libpng-dev \
     libjpeg-dev \
-    libtiff5 \
+    libtiff6 \
     libopenjp2-7 \
-    tk \
-    tcl \
     python3-tk \
     pkg-config \
     libffi-dev \
