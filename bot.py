@@ -94,7 +94,8 @@ reporter = create_reporter(
 # ==== גלובלי לסשנים ====
 sessions = {}
 
-# ==== הקשר גלובלי לסשן פייתון מתמשך ====
+# ==== הקשר גלובלי לסשן פייתון מתמשך (לפי chat_id) ====
+# מיפוי chat_id -> context dict לשמירת מצב פייתון לכל צ'אט בנפרד
 PY_CONTEXT = {}
 
 
@@ -196,7 +197,8 @@ async def send_output(update: Update, text: str, filename: str = "output.txt"):
         with tempfile.NamedTemporaryFile("w", delete=False, suffix=os.path.splitext(filename)[1] or ".txt", encoding="utf-8") as tf:
             tf.write(text)
             tmp_path = tf.name
-        await update.message.reply_document(document=open(tmp_path, "rb"), filename=filename, caption="(full output)")
+        with open(tmp_path, "rb") as fh:
+            await update.message.reply_document(document=fh, filename=filename, caption="(full output)")
     finally:
         try:
             if tmp_path and os.path.exists(tmp_path):
@@ -320,10 +322,11 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
         if first_token and first_token not in ALLOWED_CMDS:
             return await update.message.reply_text(f"❗ פקודה לא מאושרת: {first_token}")
 
-    # הרצה בשלם (תומך בצינורות/&&/;) בתוך bash -c
+    # הרצה בשלם (תומך בצינורות/&&/;) בתוך shell שהוגדר (ברירת מחדל bash)
     try:
+        shell_exec = SHELL_EXECUTABLE or "/bin/bash"
         p = subprocess.run(
-            ["bash", "-c", cmdline],
+            [shell_exec, "-c", cmdline],
             capture_output=True,
             text=True,
             timeout=TIMEOUT,
@@ -417,23 +420,26 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     cleaned = textwrap.dedent(code)
     cleaned = normalize_code(cleaned).strip("\n") + "\n"
 
-    def _exec_in_context(src: str):
+    def _exec_in_context(src: str, chat_id: int):
         global PY_CONTEXT
-        # אתחול ראשוני של הקשר ההרצה
-        if not PY_CONTEXT:
-            PY_CONTEXT = {"__builtins__": __builtins__}
+        # אתחול ראשוני של הקשר ההרצה לצ'אט הנוכחי
+        ctx = PY_CONTEXT.get(chat_id)
+        if ctx is None:
+            ctx = {"__builtins__": __builtins__}
+            PY_CONTEXT[chat_id] = ctx
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
         tb_text = None
         try:
             with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                exec(src, PY_CONTEXT, PY_CONTEXT)
+                exec(src, ctx, ctx)
         except Exception:
             tb_text = traceback.format_exc()
         return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
 
     try:
-        out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned), timeout=TIMEOUT)
+        chat_id = _chat_id(update)
+        out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
         parts = []
         if out.strip():
             parts.append(out.rstrip())
