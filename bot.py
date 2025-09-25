@@ -88,8 +88,8 @@ def save_allowed_cmds_to_file() -> None:
 # ==== Reporter ====
 reporter = create_reporter(
     mongodb_uri="mongodb+srv://mumin:M43M2TFgLfGvhBwY@muminai.tm6x81b.mongodb.net/?retryWrites=true&w=majority&appName=muminAI",
-    service_id="srv-d2d0dnc9c44c73b5d6q0",
-    service_name="MyTerminal66Bot",
+    service_id="srv-d3agim49c44c73dsq4j0",
+    service_name="MyTerminalBot",
 )
 
 # ==== גלובלי לסשנים ====
