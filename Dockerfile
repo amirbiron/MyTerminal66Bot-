@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libblas-dev \
     liblapack-dev \
+    libopenblas-dev \
     libfreetype6-dev \
     libpng-dev \
     libjpeg-dev \
