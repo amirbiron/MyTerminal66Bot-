@@ -26,6 +26,7 @@ from telegram.error import NetworkError, TimedOut, Conflict, BadRequest
 # ==== תצורה ====
 OWNER_ID = int(os.getenv("OWNER_ID", "6865105071"))
 TIMEOUT = int(os.getenv("CMD_TIMEOUT", "60"))
+PIP_TIMEOUT = int(os.getenv("PIP_TIMEOUT", "120"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
 TG_MAX_MESSAGE = int(os.getenv("TG_MAX_MESSAGE", "4000"))
 RESTART_NOTIFY_PATH = os.getenv("RESTART_NOTIFY_PATH", "/tmp/bot_restart_notify.json")
@@ -136,6 +137,13 @@ def normalize_code(text: str) -> str:
     # CRLF ל-LF
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text
+
+
+SAFE_PIP_NAME_RE = re.compile(r'^[a-zA-Z0-9_\-]+$')
+
+
+def install_package(package: str):
+    subprocess.run([sys.executable, "-m", "pip", "install", package], check=True)
 
 
 def _chat_id(update: Update) -> int:
@@ -440,6 +448,30 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     try:
         chat_id = _chat_id(update)
         out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
+
+        # Attempt dynamic install on ModuleNotFoundError, up to 3 modules per run
+        attempts = 0
+        while tb_text and "ModuleNotFoundError" in tb_text and attempts < 3:
+            m = re.search(r"ModuleNotFoundError: No module named '([^']+)'", tb_text)
+            if not m:
+                break
+            missing_mod = m.group(1)
+            if not SAFE_PIP_NAME_RE.match(missing_mod):
+                await update.message.reply_text(f"❌ שם מודול לא תקין להתקנה: '{missing_mod}'")
+                break
+            try:
+                await update.message.reply_text(f"📦 מתקין את '{missing_mod}' (pip)…")
+                await asyncio.wait_for(asyncio.to_thread(install_package, missing_mod), timeout=PIP_TIMEOUT)
+                await update.message.reply_text(f"✅ '{missing_mod}' הותקן. מריץ שוב…")
+            except asyncio.TimeoutError:
+                await update.message.reply_text(f"⏱️ Timeout בהתקנת '{missing_mod}' לאחר {PIP_TIMEOUT}s")
+                break
+            except subprocess.CalledProcessError as e:
+                await update.message.reply_text(f"❌ כשל בהתקנת '{missing_mod}' (קוד {e.returncode})")
+                break
+            attempts += 1
+            out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
+
         parts = []
         if out.strip():
             parts.append(out.rstrip())
