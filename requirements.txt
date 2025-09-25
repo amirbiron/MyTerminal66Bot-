@@ -17,3 +17,6 @@ rich>=13,<14
 loguru>=0.7,<1
 tqdm>=4.66,<5
 humanize>=4.9,<5
+numpy>=1.26,<3
+matplotlib>=3.8,<3.10
+pygame>=2.5,<3

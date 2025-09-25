@@ -12,6 +12,11 @@ import tempfile
 import textwrap
 import subprocess
 import zipfile  # נשאר אם תרצה להשתמש בהמשך
+import io
+import traceback
+import contextlib
+import unicodedata
+import re
 
 from activity_reporter import create_reporter
 from telegram import Update
@@ -89,6 +94,10 @@ reporter = create_reporter(
 # ==== גלובלי לסשנים ====
 sessions = {}
 
+# ==== הקשר גלובלי לסשן פייתון מתמשך (לפי chat_id) ====
+# מיפוי chat_id -> context dict לשמירת מצב פייתון לכל צ'אט בנפרד
+PY_CONTEXT = {}
+
 
 # ==== עזר ====
 def allowed(u: Update) -> bool:
@@ -102,6 +111,31 @@ def truncate(s: str) -> str:
     if len(s) <= MAX_OUTPUT:
         return s
     return s[:MAX_OUTPUT] + f"\n\n…[truncated {len(s) - MAX_OUTPUT} chars]"
+
+
+def normalize_code(text: str) -> str:
+    """ניקוי תווים נסתרים, גרשיים חכמים, NBSP וכד'.
+    - ממיר גרשיים חכמים לגרשיים רגילים
+    - ממיר NBSP ותווים דומים לרווח רגיל
+    - מנרמל יוניקוד ל-NFKC
+    - מחליף \r\n ל-\n
+    """
+    if not text:
+        return ""
+    # נירמול יוניקוד כללי
+    text = unicodedata.normalize("NFKC", text)
+    # המרות גרשיים חכמים
+    text = text.replace("“", '"').replace("”", '"').replace("„", '"')
+    text = text.replace("‘", "'").replace("’", "'")
+    # NBSP וקרובים
+    text = text.replace("\u00A0", " ").replace("\u202F", " ")
+    # סימני כיוון בלתי נראים
+    text = text.replace("\u200E", "").replace("\u200F", "")
+    # קו מפריד רך -> רגיל
+    text = text.replace("\u00AD", "")
+    # CRLF ל-LF
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text
 
 
 def _chat_id(update: Update) -> int:
@@ -130,18 +164,41 @@ def _resolve_path(base_cwd: str, target: str) -> str:
 
 
 async def send_output(update: Update, text: str, filename: str = "output.txt"):
-    """שולח פלט כטקסט קצר, ואם ארוך מדי – כקובץ מצורף."""
+    """שולח פלט כטקסט קצר. אם ארוך מ-4000 תווים:
+    - שולח תצוגה מקדימה של השורות הראשונות + "(output truncated)"
+    - מצרף קובץ עם הפלט המלא
+    """
     text = text or "(no output)"
     if len(text) <= TG_MAX_MESSAGE:
         await update.message.reply_text(text)
         return
 
-    # ארוך מדי – נשלח כקובץ
+    # שליחת תצוגה מקדימה
+    try:
+        lines = text.splitlines()
+        preview_lines = []
+        current_len = 0
+        limit = max(0, TG_MAX_MESSAGE - len("(output truncated)\n"))
+        for ln in lines:
+            add_len = len(ln) + (1 if preview_lines else 0)
+            if current_len + add_len > limit:
+                break
+            preview_lines.append(ln)
+            current_len += add_len
+        preview = ("\n".join(preview_lines) + "\n(output truncated)") if preview_lines else "(output truncated)"
+        await update.message.reply_text(preview[:TG_MAX_MESSAGE])
+    except Exception:
+        # אם נכשל יצירת פריוויו, נמשיך עם קובץ בלבד
+        pass
+
+    # קובץ מלא
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile("w", delete=False, suffix=os.path.splitext(filename)[1] or ".txt", encoding="utf-8") as tf:
             tf.write(text)
             tmp_path = tf.name
-        await update.message.reply_document(document=open(tmp_path, "rb"), filename=filename, caption="(truncated output)")
+        with open(tmp_path, "rb") as fh:
+            await update.message.reply_document(document=fh, filename=filename, caption="(full output)")
     finally:
         try:
             if tmp_path and os.path.exists(tmp_path):
@@ -242,6 +299,7 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
         return
 
     cmdline = update.message.text.partition(" ")[2].strip()
+    cmdline = normalize_code(cmdline)
     if not cmdline:
         return await update.message.reply_text("שימוש: /sh <פקודה>")
 
@@ -264,17 +322,16 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
         if first_token and first_token not in ALLOWED_CMDS:
             return await update.message.reply_text(f"❗ פקודה לא מאושרת: {first_token}")
 
-    # הרצה בשלם (תומך בצינורות/&&/;) בתוך shell
+    # הרצה בשלם (תומך בצינורות/&&/;) בתוך shell שהוגדר (ברירת מחדל bash)
     try:
+        shell_exec = SHELL_EXECUTABLE or "/bin/bash"
         p = subprocess.run(
-            cmdline,
-            shell=True,
+            [shell_exec, "-c", cmdline],
             capture_output=True,
             text=True,
             timeout=TIMEOUT,
             cwd=sess["cwd"],
             env=sess["env"],
-            executable=SHELL_EXECUTABLE,
         )
         out = p.stdout or ""
         err = p.stderr or ""
@@ -284,6 +341,8 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
         resp = truncate(resp.strip() or "(no output)")
     except subprocess.TimeoutExpired:
         resp = f"$ {cmdline}\n\n⏱️ Timeout"
+    except Exception as e:
+        resp = truncate(f"$ {cmdline}\n\nERR:\n{e}")
 
     await send_output(update, resp, "output.txt")
 
@@ -357,47 +416,43 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not code.strip():
         return await update.message.reply_text("שימוש: /py <קוד פייתון>")
 
-    cleaned = textwrap.dedent(code).strip() + "\n"
+    # ניקוי ופירמוט קוד
+    cleaned = textwrap.dedent(code)
+    cleaned = normalize_code(cleaned).strip("\n") + "\n"
 
-    tmp = None
-    try:
-        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as tf:
-            tf.write(cleaned)
-            tmp = tf.name
-
-        sess = get_session(update)
-
-        # מריצים באותו פרשן וסביבה של השירות (לא משתמשים ב -I/-S כדי לא לבודד site-packages)
-        env = os.environ.copy()
-        env.update(sess["env"])
-        env["PYTHONUNBUFFERED"] = "1"
-
-        interpreter = sys.executable or "python3"
-        cmd = [interpreter, tmp]
-
-        p = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT,
-            cwd=sess["cwd"],
-            env=env,
-        )
-
-        out = (p.stdout or "").strip()
-        err = (p.stderr or "").strip()
-        resp = out if out else "(no output)"
-        if err:
-            resp += "\nERR:\n" + err
-
-        await send_output(update, truncate(resp), "py-output.txt")
-
-    finally:
+    def _exec_in_context(src: str, chat_id: int):
+        global PY_CONTEXT
+        # אתחול ראשוני של הקשר ההרצה לצ'אט הנוכחי
+        ctx = PY_CONTEXT.get(chat_id)
+        if ctx is None:
+            ctx = {"__builtins__": __builtins__}
+            PY_CONTEXT[chat_id] = ctx
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        tb_text = None
         try:
-            if tmp and os.path.exists(tmp):
-                os.remove(tmp)
+            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+                exec(src, ctx, ctx)
         except Exception:
-            pass
+            tb_text = traceback.format_exc()
+        return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
+
+    try:
+        chat_id = _chat_id(update)
+        out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
+        parts = []
+        if out.strip():
+            parts.append(out.rstrip())
+        if err.strip():
+            parts.append("STDERR:\n" + err.rstrip())
+        if tb_text and tb_text.strip():
+            parts.append(tb_text.rstrip())
+        resp = "\n".join(parts).strip() or "(no output)"
+        await send_output(update, truncate(resp), "py-output.txt")
+    except asyncio.TimeoutError:
+        await send_output(update, "⏱️ Timeout", "py-output.txt")
+    except Exception as e:
+        await send_output(update, f"ERR:\n{e}", "py-output.txt")
 
 
 async def env_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):

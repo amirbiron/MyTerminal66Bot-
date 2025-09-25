@@ -2,6 +2,8 @@
 
 מדריך קצר:
 
+[הוראות בעברית מלאות](INSTRUCTIONS_HE.md)
+
 ## שליחת הודעת בדיקה בטלגרם
 
 החלף לערכים אמיתיים (ללא <>).
@@ -36,3 +38,17 @@ git push -u origin HEAD
 ```
 
 לאחר מכן פתחו PR מהענף אל `main` דרך עמוד ה-Compare של GitHub.
+
+## הרצה בסביבת Docker (Python 3.11)
+
+```bash
+# בנייה
+docker build -t myterminal66bot:py311 .
+
+# הרצה (מעביר את הטוקן דרך משתני סביבה)
+docker run --rm -e BOT_TOKEN="$BOT_TOKEN" -e OWNER_ID="$OWNER_ID" \
+  -e CMD_TIMEOUT=60 -e TG_MAX_MESSAGE=4000 \
+  --name myterminal66bot myterminal66bot:py311
+```
+
+הדימוי מבוסס על `python:3.11-slim` ומותקנות בו מראש ספריות נפוצות (numpy, matplotlib, pygame) כך שקוד עם `import` יעבוד ללא שגיאות.
