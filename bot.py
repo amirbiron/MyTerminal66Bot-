@@ -463,7 +463,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 id=f"run:{token}:sh:{current_offset}",
                 title=f"להריץ ב-/sh: {q}",
                 description="יופיע \"מריץ…\" ואז לחיצה על הכפתור תריץ",
-                input_message_content=InputTextMessageContent("⏳ מריץ…"),
+                input_message_content=InputTextMessageContent(f"⏳ מריץ…\n\n$ {q}\n\n(לחץ 🔄 להרצה)"),
                 reply_markup=_make_refresh_markup(token),
             )
         )
@@ -479,7 +479,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 id=f"run:{token_py}:py:{current_offset}",
                 title="להריץ ב-/py (בלוק קוד)",
                 description="יופיע \"מריץ…\" ואז לחיצה על הכפתור תריץ",
-                input_message_content=InputTextMessageContent("⏳ מריץ…"),
+                input_message_content=InputTextMessageContent(f"⏳ מריץ…\n\n/py:\n{q}\n\n(לחץ 🔄 להרצה)"),
                 reply_markup=_make_refresh_markup(token_py),
             )
         )
