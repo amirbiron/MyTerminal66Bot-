@@ -551,6 +551,18 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             return
         token = parts[1]
         run_type = parts[2]
+        inline_msg_id = getattr(chosen, "inline_message_id", None)
+        if INLINE_DEBUG_FLAG and OWNER_ID:
+            try:
+                await _.bot.send_message(
+                    chat_id=OWNER_ID,
+                    text=(
+                        f"🔎 chosen_inline: result_id='{result_id}', type={run_type}, "
+                        f"has_inline_message_id={'yes' if bool(inline_msg_id) else 'no'}"
+                    ),
+                )
+            except Exception:
+                pass
         data = INLINE_EXEC_STORE.get(token)
         if not data:
             return
@@ -654,20 +666,34 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
         prune_inline_exec_store()
 
         # אם יש inline_message_id – נערוך את הודעת האינליין בצ'אט היעד
-        inline_msg_id = getattr(chosen, "inline_message_id", None)
         if inline_msg_id:
             try:
                 await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
+                if INLINE_DEBUG_FLAG and OWNER_ID:
+                    try:
+                        await _.bot.send_message(chat_id=OWNER_ID, text="✏️ inline_message נערך בהצלחה")
+                    except Exception:
+                        pass
             except Exception:
                 # נפילה חכמה: שליחת הודעה פרטית לבעלים
                 try:
                     await _.bot.send_message(chat_id=user_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
+                    if INLINE_DEBUG_FLAG and OWNER_ID:
+                        try:
+                            await _.bot.send_message(chat_id=OWNER_ID, text="⚠️ עריכה נכשלה – נשלחה הודעה פרטית")
+                        except Exception:
+                            pass
                 except Exception:
                     pass
         else:
             # אין מזהה הודעת אינליין – שליחה פרטית לבעלים
             try:
                 await _.bot.send_message(chat_id=user_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
+                if INLINE_DEBUG_FLAG and OWNER_ID:
+                    try:
+                        await _.bot.send_message(chat_id=OWNER_ID, text="ℹ️ אין inline_message_id – נשלחה הודעה פרטית")
+                    except Exception:
+                        pass
             except Exception:
                 pass
     finally:
