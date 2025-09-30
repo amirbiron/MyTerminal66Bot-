@@ -17,6 +17,7 @@ import traceback
 import contextlib
 import unicodedata
 import re
+import hashlib
 
 from activity_reporter import create_reporter
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
@@ -322,12 +323,14 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
     PAGE_SIZE = 10
     results = []
+    is_owner = allowed(update)
+    qhash = hashlib.sha1(q.encode("utf-8")).hexdigest()[:12] if q else "noq"
 
     # קיצורי דרך: להכין הודעה עם /sh או /py עבור הטקסט השלם שהוקלד
-    if q:
+    if q and current_offset == 0:
         results.append(
             InlineQueryResultArticle(
-                id="sh-echo",
+                id=f"echo-sh:{qhash}:{current_offset}",
                 title=f"להריץ ב-/sh: {q}",
                 description="מכין הודעת /sh עם הטקסט שחיפשת",
                 input_message_content=InputTextMessageContent(f"/sh {q}")
@@ -335,7 +338,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         )
         results.append(
             InlineQueryResultArticle(
-                id="py-echo",
+                id=f"echo-py:{qhash}:{current_offset}",
                 title="להריץ ב-/py (בלוק קוד)",
                 description="מכין הודעת /py עם הטקסט שלך",
                 input_message_content=InputTextMessageContent(f"/py {q}")
@@ -343,17 +346,19 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         )
 
     # הצעות מתוך רשימת הפקודות המותרות, עם פאגינציה
-    candidates = sorted(ALLOWED_CMDS)
-    if q:
-        ql = q.lower()
-        candidates = [c for c in candidates if ql in c.lower()]
+    candidates = []
+    if is_owner:
+        candidates = sorted(ALLOWED_CMDS)
+        if q:
+            ql = q.lower()
+            candidates = [c for c in candidates if ql in c.lower()]
 
     total = len(candidates)
     page_slice = candidates[current_offset: current_offset + PAGE_SIZE]
     for cmd in page_slice:
         results.append(
             InlineQueryResultArticle(
-                id=f"cmd-{cmd}",
+                id=f"cmd:{qhash}:{current_offset}:{cmd}",
                 title=f"/sh {cmd}",
                 description="לחיצה תכין הודעת /sh עם הפקודה",
                 input_message_content=InputTextMessageContent(f"/sh {cmd}")
@@ -362,10 +367,10 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
     next_offset = str(current_offset + PAGE_SIZE) if (current_offset + PAGE_SIZE) < total else ""
 
-    if not results:
+    if not results and current_offset == 0:
         results.append(
             InlineQueryResultArticle(
-                id="help",
+                id=f"help:{qhash}:{current_offset}",
                 title="איך משתמשים באינליין?",
                 description="כתבו @שם_הבוט ואז טקסט לחיפוש, למשל 'curl'",
                 input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד>")
