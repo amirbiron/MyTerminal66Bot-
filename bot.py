@@ -26,7 +26,21 @@ from telegram.ext import Application, CommandHandler, ContextTypes, InlineQueryH
 from telegram.error import NetworkError, TimedOut, Conflict, BadRequest
 
 # ==== תצורה ====
-OWNER_ID = int(os.getenv("OWNER_ID", "6865105071"))
+def _parse_owner_ids(raw: str | None) -> set[int]:
+    if not raw:
+        return set()
+    parts = [p.strip() for p in raw.replace("\n", ",").split(",")]
+    owners: set[int] = set()
+    for p in parts:
+        if not p:
+            continue
+        try:
+            owners.add(int(p))
+        except ValueError:
+            continue
+    return owners
+
+OWNER_IDS = _parse_owner_ids(os.getenv("OWNER_ID", "6865105071"))
 TIMEOUT = int(os.getenv("CMD_TIMEOUT", "60"))
 PIP_TIMEOUT = int(os.getenv("PIP_TIMEOUT", "120"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
