@@ -182,6 +182,19 @@ def allowed(u: Update) -> bool:
     return bool(u.effective_user and u.effective_user.id == OWNER_ID)
 
 
+def report_nowait(user_id: int) -> None:
+    """מריץ דיווח פעילות ברקע בלי לעכב את הטיפול באירוע."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(asyncio.to_thread(reporter.report_activity, user_id))
+    except RuntimeError:
+        # אין לולאה פעילה – נריץ בת'רד בלי להמתין
+        try:
+            import threading
+            threading.Thread(target=reporter.report_activity, args=(user_id,), daemon=True).start()
+        except Exception:
+            pass
+
 def truncate(s: str) -> str:
     s = (s or "").strip()
     if not s:
@@ -373,7 +386,7 @@ async def on_post_init(app: Application) -> None:
 
 # ==== פקודות ====
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return await update.message.reply_text("/sh <פקודת shell>\n/py <קוד פייתון>\n/health\n/restart\n/env\n/reset\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)")
 
@@ -388,7 +401,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         user_id = update.inline_query.from_user.id if update.inline_query and update.inline_query.from_user else 0
     except Exception:
         user_id = 0
-    reporter.report_activity(user_id)
+    report_nowait(user_id)
 
     q = (update.inline_query.query or "").strip() if update.inline_query else ""
     offset_text = update.inline_query.offset if update.inline_query else ""
@@ -501,6 +514,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             return
 
         user_id = chosen.from_user.id if chosen.from_user else 0
+        report_nowait(user_id)
         if user_id != OWNER_ID:
             # אם מי שבחר אינו הבעלים – נשלח לו הודעה פרטית עם הנחיות וה-ID שלו
             try:
@@ -742,7 +756,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return
 
@@ -800,7 +814,7 @@ def _parse_cmds_args(arg_text: str) -> set:
 
 
 async def list_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return await update.message.reply_text("❌ אין הרשאה")
     if not ALLOWED_CMDS:
@@ -809,7 +823,7 @@ async def list_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def allow_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return await update.message.reply_text("❌ אין הרשאה")
     args = update.message.text.partition(" ")[2]
@@ -824,7 +838,7 @@ async def allow_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def deny_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return await update.message.reply_text("❌ אין הרשאה")
     args = update.message.text.partition(" ")[2]
@@ -842,7 +856,7 @@ async def deny_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def update_allow_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return await update.message.reply_text("❌ אין הרשאה")
     args = update.message.text.partition(" ")[2]
@@ -856,7 +870,7 @@ async def update_allow_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return
 
@@ -928,7 +942,7 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def env_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return
     sess = get_session(update)
@@ -937,7 +951,7 @@ async def env_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def reset_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return
     chat_id = _chat_id(update)
@@ -946,7 +960,7 @@ async def reset_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def health_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return
     try:
@@ -963,7 +977,7 @@ async def whoami_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def restart_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return
     try:
