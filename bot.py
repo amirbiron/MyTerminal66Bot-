@@ -145,6 +145,12 @@ def _trim_for_message(text: str) -> str:
     return text
 
 
+def _make_refresh_markup(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 רענון", callback_data=f"refresh:{token}")]
+    ])
+
+
 # ==== עזר ====
 def allowed(u: Update) -> bool:
     return bool(u.effective_user and u.effective_user.id == OWNER_ID)
@@ -535,21 +541,30 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
         text_out = _trim_for_message(text_out)
 
+        # סיבוב טוקן לרענון הבא
+        new_token = secrets.token_urlsafe(8)
+        INLINE_EXEC_STORE[new_token] = {
+            "type": run_type,
+            "q": q,
+            "user_id": user_id,
+            "ts": time.time(),
+        }
+
         # אם יש inline_message_id – נערוך את הודעת האינליין בצ'אט היעד
         inline_msg_id = getattr(chosen, "inline_message_id", None)
         if inline_msg_id:
             try:
-                await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=text_out)
+                await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
             except Exception:
                 # נפילה חכמה: שליחת הודעה פרטית לבעלים
                 try:
-                    await _.bot.send_message(chat_id=user_id, text=text_out)
+                    await _.bot.send_message(chat_id=user_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
                 except Exception:
                     pass
         else:
             # אין מזהה הודעת אינליין – שליחה פרטית לבעלים
             try:
-                await _.bot.send_message(chat_id=user_id, text=text_out)
+                await _.bot.send_message(chat_id=user_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
             except Exception:
                 pass
     finally:
@@ -560,6 +575,126 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """כפתור רענון: מריץ שוב לפי הטוקן ושומר טוקן חדש, מעדכן את ההודעה במקום."""
+    query = update.callback_query
+    if not query:
+        return
+    data = query.data or ""
+    if not data.startswith("refresh:"):
+        return
+    token = data.split(":", 1)[1]
+    rec = INLINE_EXEC_STORE.get(token)
+    if not rec:
+        try:
+            await query.answer(text="⛔ אין נתוני רענון (פג תוקף)", show_alert=False)
+        except Exception:
+            pass
+        return
+
+    user_id = query.from_user.id if query.from_user else 0
+    if user_id != OWNER_ID:
+        try:
+            await query.answer(text="⛔ אין הרשאה", show_alert=False)
+        except Exception:
+            pass
+        return
+
+    if time.time() - float(rec.get("ts", 0)) > INLINE_EXEC_TTL:
+        INLINE_EXEC_STORE.pop(token, None)
+        try:
+            await query.answer(text="⛔ פג תוקף, נסה שוב מהאינליין", show_alert=False)
+        except Exception:
+            pass
+        return
+
+    run_type = rec.get("type")
+    q = normalize_code(str(rec.get("q", ""))).strip()
+    text_out = ""
+    if run_type == "sh":
+        allow = True
+        if not ALLOW_ALL_COMMANDS:
+            try:
+                parts = shlex.split(q, posix=True)
+            except ValueError:
+                parts = []
+            if not parts:
+                allow = False
+            else:
+                first_tok = parts[0].strip()
+                allow = first_tok in ALLOWED_CMDS if first_tok else False
+        if not allow:
+            text_out = "❗ פקודה לא מאושרת"
+        else:
+            sess = _get_inline_session(str(user_id))
+            try:
+                shell_exec = SHELL_EXECUTABLE or "/bin/bash"
+                p = subprocess.run(
+                    [shell_exec, "-c", q],
+                    capture_output=True,
+                    text=True,
+                    timeout=TIMEOUT,
+                    cwd=sess["cwd"],
+                    env=sess["env"],
+                )
+                out = p.stdout or ""
+                err = p.stderr or ""
+                resp = f"$ {q}\n\n{out}"
+                if err:
+                    resp += "\nERR:\n" + err
+                text_out = resp
+            except subprocess.TimeoutExpired:
+                text_out = f"$ {q}\n\n⏱️ Timeout"
+            except Exception as e:
+                text_out = f"$ {q}\n\nERR:\n{e}"
+    elif run_type == "py":
+        cleaned = textwrap.dedent(q)
+        cleaned = normalize_code(cleaned).strip("\n") + "\n"
+        try:
+            out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(exec_python_in_shared_context, cleaned, int(user_id)), timeout=TIMEOUT)
+            parts_out = []
+            if out.strip():
+                parts_out.append(out.rstrip())
+            if err.strip():
+                parts_out.append("STDERR:\n" + err.rstrip())
+            if tb_text and tb_text.strip():
+                parts_out.append(tb_text.rstrip())
+            text_out = "\n".join(parts_out).strip() or "(no output)"
+        except asyncio.TimeoutError:
+            text_out = "⏱️ Timeout"
+        except Exception as e:
+            text_out = f"ERR:\n{e}"
+    else:
+        try:
+            await query.answer(text="⛔ סוג לא נתמך", show_alert=False)
+        except Exception:
+            pass
+        return
+
+    text_out = _trim_for_message(text_out)
+    new_token = secrets.token_urlsafe(8)
+    INLINE_EXEC_STORE[new_token] = {
+        "type": run_type,
+        "q": q,
+        "user_id": user_id,
+        "ts": time.time(),
+    }
+
+    try:
+        await query.edit_message_text(text=text_out, reply_markup=_make_refresh_markup(new_token))
+        await query.answer()
+    except Exception:
+        try:
+            await _.bot.send_message(chat_id=user_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
+            await query.answer()
+        except Exception:
+            pass
+
+    # נקה טוקן ישן
+    try:
+        INLINE_EXEC_STORE.pop(token, None)
+    except Exception:
+        pass
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     reporter.report_activity(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
@@ -810,6 +945,7 @@ def main():
 
         app.add_handler(InlineQueryHandler(inline_query))
         app.add_handler(ChosenInlineResultHandler(on_chosen_inline_result))
+        app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^refresh:\w[\w-]*$"))
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
