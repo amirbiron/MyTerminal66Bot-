@@ -18,10 +18,11 @@ import contextlib
 import unicodedata
 import re
 import hashlib
+import secrets
 
 from activity_reporter import create_reporter
-from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
-from telegram.ext import Application, CommandHandler, ContextTypes, InlineQueryHandler
+from telegram import Update, InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import Application, CommandHandler, ContextTypes, InlineQueryHandler, CallbackQueryHandler, ChosenInlineResultHandler
 from telegram.error import NetworkError, TimedOut, Conflict, BadRequest
 
 # ==== תצורה ====
@@ -99,6 +100,49 @@ sessions = {}
 # ==== הקשר גלובלי לסשן פייתון מתמשך (לפי chat_id) ====
 # מיפוי chat_id -> context dict לשמירת מצב פייתון לכל צ'אט בנפרד
 PY_CONTEXT = {}
+
+# ==== הרצה באינליין ====
+INLINE_EXEC_STORE = {}
+INLINE_SESSIONS = {}
+INLINE_EXEC_TTL = int(os.getenv("INLINE_EXEC_TTL", "180"))
+
+
+def _get_inline_session(session_key: str):
+    sess = INLINE_SESSIONS.get(session_key)
+    if not sess:
+        sess = {
+            "cwd": os.getcwd(),
+            "env": dict(os.environ),
+        }
+        INLINE_SESSIONS[session_key] = sess
+    return sess
+
+
+def exec_python_in_shared_context(src: str, context_key: int):
+    """הרצת קוד פייתון בהקשר משותף לפי מזהה (למשל user_id).
+    מחזיר (stdout, stderr, traceback_text | None)
+    """
+    global PY_CONTEXT
+    ctx = PY_CONTEXT.get(context_key)
+    if ctx is None:
+        ctx = {"__builtins__": __builtins__}
+        PY_CONTEXT[context_key] = ctx
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+    tb_text = None
+    try:
+        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            exec(src, ctx, ctx)
+    except Exception:
+        tb_text = traceback.format_exc()
+    return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
+
+
+def _trim_for_message(text: str) -> str:
+    text = truncate(text or "(no output)")
+    if len(text) > TG_MAX_MESSAGE:
+        return text[:TG_MAX_MESSAGE]
+    return text
 
 
 # ==== עזר ====
@@ -328,17 +372,32 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
     # קיצורי דרך: להכין הודעה עם /sh או /py עבור הטקסט השלם שהוקלד
     if q and current_offset == 0:
+        # כדי לאפשר "הרצה אמיתית" בבחירה, נכניס מטא-טוקן בתוך ה-id
+        token = secrets.token_urlsafe(8)
+        INLINE_EXEC_STORE[token] = {
+            "type": "sh",
+            "q": q,
+            "user_id": user_id,
+            "ts": time.time(),
+        }
         results.append(
             InlineQueryResultArticle(
-                id=f"echo-sh:{qhash}:{current_offset}",
+                id=f"run:{token}:sh:{current_offset}",
                 title=f"להריץ ב-/sh: {q}",
                 description="מכין הודעת /sh עם הטקסט שחיפשת",
                 input_message_content=InputTextMessageContent(f"/sh {q}")
             )
         )
+        token_py = secrets.token_urlsafe(8)
+        INLINE_EXEC_STORE[token_py] = {
+            "type": "py",
+            "q": q,
+            "user_id": user_id,
+            "ts": time.time(),
+        }
         results.append(
             InlineQueryResultArticle(
-                id=f"echo-py:{qhash}:{current_offset}",
+                id=f"run:{token_py}:py:{current_offset}",
                 title="להריץ ב-/py (בלוק קוד)",
                 description="מכין הודעת /py עם הטקסט שלך",
                 input_message_content=InputTextMessageContent(f"/py {q}")
@@ -380,8 +439,113 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     try:
         await update.inline_query.answer(results, cache_time=0, is_personal=True, next_offset=next_offset)
     except BadRequest:
-        # במקרה של בעיית מזהים כפולים/קלט לא תקין, ננסה לענות ללא next_offset
         await update.inline_query.answer(results, cache_time=0, is_personal=True)
+
+
+async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """כאשר המשתמש בוחר תוצאת אינליין, נזהה אם זו תוצאת 'run:' שלנו ונריץ בפועל.
+    נחזיר טקסט קצר כי לא ניתן לערוך את ההודעה שנשלחה כבר; במקום זה נשלח למשתמש הודעה אישית.
+    """
+    try:
+        chosen = update.chosen_inline_result
+        if not chosen:
+            return
+        result_id = chosen.result_id or ""
+        parts = result_id.split(":")
+        if len(parts) < 4 or parts[0] != "run":
+            return
+        token = parts[1]
+        run_type = parts[2]
+        data = INLINE_EXEC_STORE.get(token)
+        if not data:
+            return
+        # ניקוי רשומה אם ישנה זמן רב
+        if time.time() - float(data.get("ts", 0)) > INLINE_EXEC_TTL:
+            INLINE_EXEC_STORE.pop(token, None)
+            return
+
+        user_id = chosen.from_user.id if chosen.from_user else 0
+        if user_id != OWNER_ID:
+            return
+
+        q = normalize_code(str(data.get("q", ""))).strip()
+        if not q:
+            return
+
+        # נערוך הרצה בהתאם לסוג
+        text_out = ""
+        if run_type == "sh":
+            # אימות פקודה ראשונה אם צריך
+            allow = True
+            if not ALLOW_ALL_COMMANDS:
+                try:
+                    parts = shlex.split(q, posix=True)
+                except ValueError:
+                    parts = []
+                if not parts:
+                    allow = False
+                else:
+                    first_tok = parts[0].strip()
+                    allow = first_tok in ALLOWED_CMDS if first_tok else False
+            if not allow:
+                text_out = f"❗ פקודה לא מאושרת"
+            else:
+                sess = _get_inline_session(str(user_id))
+                try:
+                    shell_exec = SHELL_EXECUTABLE or "/bin/bash"
+                    p = subprocess.run(
+                        [shell_exec, "-c", q],
+                        capture_output=True,
+                        text=True,
+                        timeout=TIMEOUT,
+                        cwd=sess["cwd"],
+                        env=sess["env"],
+                    )
+                    out = p.stdout or ""
+                    err = p.stderr or ""
+                    resp = f"$ {q}\n\n{out}"
+                    if err:
+                        resp += "\nERR:\n" + err
+                    text_out = resp
+                except subprocess.TimeoutExpired:
+                    text_out = f"$ {q}\n\n⏱️ Timeout"
+                except Exception as e:
+                    text_out = f"$ {q}\n\nERR:\n{e}"
+
+        elif run_type == "py":
+            cleaned = textwrap.dedent(q)
+            cleaned = normalize_code(cleaned).strip("\n") + "\n"
+            try:
+                out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(exec_python_in_shared_context, cleaned, int(user_id)), timeout=TIMEOUT)
+                parts_out = []
+                if out.strip():
+                    parts_out.append(out.rstrip())
+                if err.strip():
+                    parts_out.append("STDERR:\n" + err.rstrip())
+                if tb_text and tb_text.strip():
+                    parts_out.append(tb_text.rstrip())
+                text_out = "\n".join(parts_out).strip() or "(no output)"
+            except asyncio.TimeoutError:
+                text_out = "⏱️ Timeout"
+            except Exception as e:
+                text_out = f"ERR:\n{e}"
+        else:
+            return
+
+        text_out = _trim_for_message(text_out)
+
+        # שליחת הודעה פרטית למשתמש הבוחר (לא ניתן לחייב שזו תהיה באותו צ'אט שבו שולב האינליין)
+        # ננסה לשלוח באמצעות bot.send_message עם user_id
+        try:
+            await _.bot.send_message(chat_id=user_id, text=text_out)
+        except Exception:
+            pass
+    finally:
+        # מחיקה רכה של הטוקן
+        try:
+            INLINE_EXEC_STORE.pop(token, None)
+        except Exception:
+            pass
 
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     reporter.report_activity(update.effective_user.id if update.effective_user else 0)
@@ -632,6 +796,7 @@ def main():
         app = Application.builder().token(token).post_init(on_post_init).build()
 
         app.add_handler(InlineQueryHandler(inline_query))
+        app.add_handler(ChosenInlineResultHandler(on_chosen_inline_result))
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
