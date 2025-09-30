@@ -500,10 +500,30 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             )
         )
 
+    num_results = len(results)
     try:
         await update.inline_query.answer(results, cache_time=0, is_personal=True, next_offset=next_offset)
-    except BadRequest:
-        await update.inline_query.answer(results, cache_time=0, is_personal=True)
+        # דיבוג: דו"ח כמה תוצאות נשלחו
+        if OWNER_ID and not INLINE_DEBUG_SENT:
+            try:
+                await _.bot.send_message(chat_id=OWNER_ID, text=f"✅ inline: נשלחו {num_results} תוצאות (offset={current_offset}, next='{next_offset or '-'}')")
+            except Exception:
+                pass
+    except BadRequest as e:
+        # נסה ללא next_offset
+        try:
+            await update.inline_query.answer(results, cache_time=0, is_personal=True)
+            if OWNER_ID and not INLINE_DEBUG_SENT:
+                try:
+                    await _.bot.send_message(chat_id=OWNER_ID, text=f"⚠️ inline עם שגיאה קלה (retry): {e}")
+                except Exception:
+                    pass
+        except Exception as ex:
+            if OWNER_ID and not INLINE_DEBUG_SENT:
+                try:
+                    await _.bot.send_message(chat_id=OWNER_ID, text=f"❌ inline נכשל: {ex}")
+                except Exception:
+                    pass
 
 
 async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
