@@ -252,7 +252,7 @@ def prune_inline_exec_store(now_ts: float | None = None) -> tuple[int, int]:
 
 # ==== עזר ====
 def allowed(u: Update) -> bool:
-    return bool(u.effective_user and u.effective_user.id == OWNER_ID)
+    return bool(u.effective_user and u.effective_user.id in OWNER_IDS)
 
 
 def report_nowait(user_id: int) -> None:
@@ -455,8 +455,8 @@ async def on_post_init(app: Application) -> None:
         # הודעת בדיקה לבעלים על אתחול
         if INLINE_DEBUG_FLAG:
             try:
-                if OWNER_ID:
-                    await app.bot.send_message(chat_id=OWNER_ID, text="🟢 הבוט עלה (polling)")
+                for oid in (OWNER_IDS or set()):
+                    await app.bot.send_message(chat_id=oid, text="🟢 הבוט עלה (polling)")
             except Exception:
                 pass
     except Exception:
@@ -485,10 +485,11 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     # הודעת דיבוג חד פעמית לבעלים כדי לוודא שאינליין מגיע
     if INLINE_DEBUG_FLAG:
         global INLINE_DEBUG_SENT
-        if not INLINE_DEBUG_SENT and OWNER_ID:
+        if not INLINE_DEBUG_SENT and OWNER_IDS:
             INLINE_DEBUG_SENT = True
             try:
-                await _.bot.send_message(chat_id=OWNER_ID, text=f"ℹ️ התקבלה inline_query מ-{user_id} עם '{(update.inline_query.query or '').strip()}'")
+                for oid in OWNER_IDS:
+                    await _.bot.send_message(chat_id=oid, text=f"ℹ️ התקבלה inline_query מ-{user_id} עם '{(update.inline_query.query or '').strip()}'")
             except Exception:
                 pass
 
@@ -595,10 +596,11 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     try:
         await update.inline_query.answer(results, cache_time=0, is_personal=True, next_offset=next_offset)
         # דיבוג: דו"ח כמה תוצאות נשלחו
-        if INLINE_DEBUG_FLAG and OWNER_ID:
+        if INLINE_DEBUG_FLAG and OWNER_IDS:
             try:
-                await _.bot.send_message(
-                    chat_id=OWNER_ID,
+                for oid in OWNER_IDS:
+                    await _.bot.send_message(
+                    chat_id=oid,
                     text=(
                         f"✅ inline: נשלחו {num_results} תוצאות "
                         f"(owner={'yes' if is_owner else 'no'}, q='{q}', total_candidates={total}, "
@@ -611,15 +613,17 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         # נסה ללא next_offset
         try:
             await update.inline_query.answer(results, cache_time=0, is_personal=True)
-            if INLINE_DEBUG_FLAG and OWNER_ID:
+            if INLINE_DEBUG_FLAG and OWNER_IDS:
                 try:
-                    await _.bot.send_message(chat_id=OWNER_ID, text=f"⚠️ inline עם שגיאה קלה (retry): {e}")
+                    for oid in OWNER_IDS:
+                        await _.bot.send_message(chat_id=oid, text=f"⚠️ inline עם שגיאה קלה (retry): {e}")
                 except Exception:
                     pass
         except Exception as ex:
-            if INLINE_DEBUG_FLAG and OWNER_ID:
+            if INLINE_DEBUG_FLAG and OWNER_IDS:
                 try:
-                    await _.bot.send_message(chat_id=OWNER_ID, text=f"❌ inline נכשל: {ex}")
+                    for oid in OWNER_IDS:
+                        await _.bot.send_message(chat_id=oid, text=f"❌ inline נכשל: {ex}")
                 except Exception:
                     pass
 
@@ -640,10 +644,11 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
         token = parts[1]
         run_type = parts[2]
         inline_msg_id = getattr(chosen, "inline_message_id", None)
-        if INLINE_DEBUG_FLAG and OWNER_ID:
+        if INLINE_DEBUG_FLAG and OWNER_IDS:
             try:
-                await _.bot.send_message(
-                    chat_id=OWNER_ID,
+                for oid in OWNER_IDS:
+                    await _.bot.send_message(
+                    chat_id=oid,
                     text=(
                         f"🔎 chosen_inline: result_id='{result_id}', type={run_type}, "
                         f"has_inline_message_id={'yes' if bool(inline_msg_id) else 'no'}"
@@ -662,7 +667,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
         user_id = chosen.from_user.id if chosen.from_user else 0
         report_nowait(user_id)
-        if user_id != OWNER_ID:
+        if user_id not in OWNER_IDS:
             # אם מי שבחר אינו הבעלים – נשלח לו הודעה פרטית עם הנחיות וה-ID שלו
             try:
                 await _.bot.send_message(
@@ -670,7 +675,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
                     text=(
                         "⛔ אין לך הרשאה להריץ מהאינליין.\n"
                         f"ה־ID שלך: {user_id}\n"
-                        "אם זה הבוט שלך, קבע OWNER_ID לערך הזה בסביבה והפעל מחדש."
+                        "אם זה הבוט שלך, קבע OWNER_ID לערך הזה (או הוסף לרשימה) והפעל מחדש."
                     ),
                 )
             except Exception:
@@ -749,18 +754,20 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 full_text = text_out
                 display_text = full_text if len(full_text) <= INLINE_PREVIEW_MAX else (full_text[:INLINE_PREVIEW_MAX] + "\n\n…(נשלח קובץ מלא בפרטי)")
                 await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=display_text)
-                if INLINE_DEBUG_FLAG and OWNER_ID:
+                if INLINE_DEBUG_FLAG and OWNER_IDS:
                     try:
-                        await _.bot.send_message(chat_id=OWNER_ID, text="✏️ inline_message נערך בהצלחה")
+                        for oid in OWNER_IDS:
+                            await _.bot.send_message(chat_id=oid, text="✏️ inline_message נערך בהצלחה")
                     except Exception:
                         pass
             except Exception:
                 # נפילה חכמה: שליחת הודעה פרטית לבעלים
                 try:
                     await _.bot.send_message(chat_id=user_id, text=display_text)
-                    if INLINE_DEBUG_FLAG and OWNER_ID:
+                    if INLINE_DEBUG_FLAG and OWNER_IDS:
                         try:
-                            await _.bot.send_message(chat_id=OWNER_ID, text="⚠️ עריכה נכשלה – נשלחה הודעה פרטית")
+                            for oid in OWNER_IDS:
+                                await _.bot.send_message(chat_id=oid, text="⚠️ עריכה נכשלה – נשלחה הודעה פרטית")
                         except Exception:
                             pass
                 except Exception:
@@ -771,9 +778,10 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 full_text = text_out
                 display_text = full_text if len(full_text) <= INLINE_PREVIEW_MAX else (full_text[:INLINE_PREVIEW_MAX] + "\n\n…(נשלח קובץ מלא בפרטי)")
                 await _.bot.send_message(chat_id=user_id, text=display_text)
-                if INLINE_DEBUG_FLAG and OWNER_ID:
+                if INLINE_DEBUG_FLAG and OWNER_IDS:
                     try:
-                        await _.bot.send_message(chat_id=OWNER_ID, text="ℹ️ אין inline_message_id – נשלחה הודעה פרטית")
+                        for oid in OWNER_IDS:
+                            await _.bot.send_message(chat_id=oid, text="ℹ️ אין inline_message_id – נשלחה הודעה פרטית")
                     except Exception:
                         pass
             except Exception:
@@ -829,7 +837,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = query.from_user.id if query.from_user else 0
-    if user_id != OWNER_ID:
+    if user_id not in OWNER_IDS:
         try:
             await query.answer(text="⛔ אין הרשאה", show_alert=False)
         except Exception:
