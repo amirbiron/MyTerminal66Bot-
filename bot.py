@@ -193,7 +193,8 @@ def _make_refresh_markup(token: str) -> InlineKeyboardMarkup:
 def _split_to_chunks_by_lines(text: str, max_len: int) -> list[str]:
     """מפצל טקסט לפי שורות כדי לא לחרוג מהמגבלה. דואג שלפחות חתיכה אחת תוחזר."""
     text = text or ""
-    if max_len <= 0:
+    hard_cap = max(1, min(max_len, TG_MAX_MESSAGE - 100))
+    if hard_cap <= 0:
         return [text]
     lines = text.splitlines()
     chunks: list[str] = []
@@ -201,7 +202,7 @@ def _split_to_chunks_by_lines(text: str, max_len: int) -> list[str]:
     current_len = 0
     for ln in lines:
         add_len = len(ln) + (1 if current else 0)
-        if current_len + add_len > max_len and current:
+        if current_len + add_len > hard_cap and current:
             chunks.append("\n".join(current))
             current = [ln]
             current_len = len(ln)
@@ -537,7 +538,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             "ts": time.time(),
             "page": 0,
         }
-        py_pages = _split_to_chunks_by_lines(f"/py:\n{q}", INLINE_PREVIEW_MAX)
+        py_pages = _split_to_chunks_by_lines(q, INLINE_PREVIEW_MAX)
         results.append(
             InlineQueryResultArticle(
                 id=f"run:{token_py}:py:{current_offset}",
@@ -731,7 +732,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             cleaned = normalize_code(cleaned).strip("\n") + "\n"
             try:
                 out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(exec_python_in_shared_context, cleaned, int(user_id)), timeout=TIMEOUT)
-                parts_out = [f"/py:\n{cleaned.rstrip()}\n\n"]
+                parts_out = [cleaned.rstrip() + "\n\n"]
                 if out.strip():
                     parts_out.append(out.rstrip())
                 if err.strip():
@@ -740,9 +741,9 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
                     parts_out.append(tb_text.rstrip())
                 text_out = "\n".join(parts_out).strip() or "(no output)"
             except asyncio.TimeoutError:
-                text_out = f"/py:\n{cleaned.rstrip()}\n\n⏱️ Timeout"
+                text_out = cleaned.rstrip() + "\n\n⏱️ Timeout"
             except Exception as e:
-                text_out = f"/py:\n{cleaned.rstrip()}\n\nERR:\n{e}"
+                text_out = cleaned.rstrip() + f"\n\nERR:\n{e}"
         else:
             return
 
@@ -817,7 +818,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
             return
         q = str(rec.get("q", ""))
         run_type = rec.get("type")
-        pages = _split_to_chunks_by_lines((f"$ {q}" if run_type == "sh" else f"/py:\n{q}"), INLINE_PREVIEW_MAX)
+        pages = _split_to_chunks_by_lines((f"$ {q}" if run_type == "sh" else q), INLINE_PREVIEW_MAX)
         page_idx = max(0, min(page_idx, max(0, len(pages) - 1)))
         rec["page"] = page_idx
         try:
@@ -891,7 +892,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         cleaned = normalize_code(cleaned).strip("\n") + "\n"
         try:
             out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(exec_python_in_shared_context, cleaned, int(user_id)), timeout=TIMEOUT)
-            parts_out = [f"/py:\n{cleaned.rstrip()}\n\n"]
+            parts_out = [cleaned.rstrip() + "\n\n"]
             if out.strip():
                 parts_out.append(out.rstrip())
             if err.strip():
@@ -900,9 +901,9 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 parts_out.append(tb_text.rstrip())
             text_out = "\n".join(parts_out).strip() or "(no output)"
         except asyncio.TimeoutError:
-            text_out = f"/py:\n{cleaned.rstrip()}\n\n⏱️ Timeout"
+            text_out = cleaned.rstrip() + "\n\n⏱️ Timeout"
         except Exception as e:
-            text_out = f"/py:\n{cleaned.rstrip()}\n\nERR:\n{e}"
+            text_out = cleaned.rstrip() + f"\n\nERR:\n{e}"
     else:
         try:
             await query.answer(text="⛔ סוג לא נתמך", show_alert=False)
@@ -1211,7 +1212,7 @@ def main():
 
         app.add_handler(InlineQueryHandler(inline_query))
         app.add_handler(ChosenInlineResultHandler(on_chosen_inline_result))
-        app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^refresh:\w[\w-]*$"))
+        app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^(refresh|page):"))
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
