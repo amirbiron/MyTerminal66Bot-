@@ -26,7 +26,21 @@ from telegram.ext import Application, CommandHandler, ContextTypes, InlineQueryH
 from telegram.error import NetworkError, TimedOut, Conflict, BadRequest
 
 # ==== תצורה ====
-OWNER_ID = int(os.getenv("OWNER_ID", "6865105071"))
+def _parse_owner_ids(raw: str | None) -> set[int]:
+    if not raw:
+        return set()
+    parts = [p.strip() for p in raw.replace("\n", ",").split(",")]
+    owners: set[int] = set()
+    for p in parts:
+        if not p:
+            continue
+        try:
+            owners.add(int(p))
+        except ValueError:
+            continue
+    return owners
+
+OWNER_IDS = _parse_owner_ids(os.getenv("OWNER_ID", "6865105071"))
 TIMEOUT = int(os.getenv("CMD_TIMEOUT", "60"))
 PIP_TIMEOUT = int(os.getenv("PIP_TIMEOUT", "120"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
@@ -108,6 +122,18 @@ INLINE_EXEC_TTL = int(os.getenv("INLINE_EXEC_TTL", "180"))
 INLINE_EXEC_MAX = int(os.getenv("INLINE_EXEC_MAX", "5000"))
 INLINE_EXEC_SWEEP_SEC = int(os.getenv("INLINE_EXEC_SWEEP_SEC", "300"))
 
+# דגל דיבוג: ניתן להדליק/לכבות עם ENV או פקודות /debug_on /debug_off
+INLINE_DEBUG_FLAG = os.getenv("INLINE_DEBUG", "").lower() in ("1", "true", "yes", "on")
+INLINE_DEBUG_SENT = False
+INLINE_PREVIEW_MAX = int(os.getenv("INLINE_PREVIEW_MAX", "800"))
+
+
+def _shorten(text: str, limit: int) -> str:
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
 
 def _get_inline_session(session_key: str):
     sess = INLINE_SESSIONS.get(session_key)
@@ -145,12 +171,63 @@ def _trim_for_message(text: str) -> str:
     if len(text) > TG_MAX_MESSAGE:
         return text[:TG_MAX_MESSAGE]
     return text
+def _run_shell_blocking(shell_exec: str, q: str, cwd: str, env: dict, timeout_sec: int):
+    """מריץ פקודת shell בצורה חסימתית (להרצה בתוך ת׳רד)."""
+    return subprocess.run(
+        [shell_exec, "-c", q],
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+        cwd=cwd,
+        env=env,
+    )
+
 
 
 def _make_refresh_markup(token: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 רענון", callback_data=f"refresh:{token}")]
     ])
+
+
+def _split_to_chunks_by_lines(text: str, max_len: int) -> list[str]:
+    """מפצל טקסט לפי שורות כדי לא לחרוג מהמגבלה. דואג שלפחות חתיכה אחת תוחזר."""
+    text = text or ""
+    hard_cap = max(1, min(max_len, TG_MAX_MESSAGE - 100))
+    if hard_cap <= 0:
+        return [text]
+    lines = text.splitlines()
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for ln in lines:
+        add_len = len(ln) + (1 if current else 0)
+        if current_len + add_len > hard_cap and current:
+            chunks.append("\n".join(current))
+            current = [ln]
+            current_len = len(ln)
+        else:
+            current.append(ln)
+            current_len += add_len
+    if current or not chunks:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+def _make_before_run_markup(token: str, total_pages: int, page_idx: int) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    nav_row: list[InlineKeyboardButton] = []
+    if page_idx > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ הקודם", callback_data=f"page:{token}:{page_idx-1}"))
+    if page_idx + 1 < total_pages:
+        nav_row.append(InlineKeyboardButton("הבא ➡️", callback_data=f"page:{token}:{page_idx+1}"))
+    if nav_row:
+        buttons.append(nav_row)
+    buttons.append([
+        InlineKeyboardButton("🔄 רענון", callback_data=f"refresh:{token}"),
+        InlineKeyboardButton("📄 שלח קוד מלא", callback_data=f"sendfull:{token}"),
+    ])
+    return InlineKeyboardMarkup(buttons)
 
 
 def prune_inline_exec_store(now_ts: float | None = None) -> tuple[int, int]:
@@ -179,8 +256,21 @@ def prune_inline_exec_store(now_ts: float | None = None) -> tuple[int, int]:
 
 # ==== עזר ====
 def allowed(u: Update) -> bool:
-    return bool(u.effective_user and u.effective_user.id == OWNER_ID)
+    return bool(u.effective_user and u.effective_user.id in OWNER_IDS)
 
+
+def report_nowait(user_id: int) -> None:
+    """מריץ דיווח פעילות ברקע בלי לעכב את הטיפול באירוע."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(asyncio.to_thread(reporter.report_activity, user_id))
+    except RuntimeError:
+        # אין לולאה פעילה – נריץ בת'רד בלי להמתין
+        try:
+            import threading
+            threading.Thread(target=reporter.report_activity, args=(user_id,), daemon=True).start()
+        except Exception:
+            pass
 
 def truncate(s: str) -> str:
     s = (s or "").strip()
@@ -366,6 +456,13 @@ async def on_post_init(app: Application) -> None:
                         os.remove(RESTART_NOTIFY_PATH)
                     except Exception:
                         pass
+        # הודעת בדיקה לבעלים על אתחול
+        if INLINE_DEBUG_FLAG:
+            try:
+                for oid in (OWNER_IDS or set()):
+                    await app.bot.send_message(chat_id=oid, text="🟢 הבוט עלה (polling)")
+            except Exception:
+                pass
     except Exception:
         # לא מפיל את הבוט אם יש בעיות הרשאות/קובץ
         pass
@@ -373,7 +470,7 @@ async def on_post_init(app: Application) -> None:
 
 # ==== פקודות ====
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return await update.message.reply_text("/sh <פקודת shell>\n/py <קוד פייתון>\n/health\n/restart\n/env\n/reset\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)")
 
@@ -388,7 +485,17 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         user_id = update.inline_query.from_user.id if update.inline_query and update.inline_query.from_user else 0
     except Exception:
         user_id = 0
-    reporter.report_activity(user_id)
+    report_nowait(user_id)
+    # הודעת דיבוג חד פעמית לבעלים כדי לוודא שאינליין מגיע
+    if INLINE_DEBUG_FLAG:
+        global INLINE_DEBUG_SENT
+        if not INLINE_DEBUG_SENT and OWNER_IDS:
+            INLINE_DEBUG_SENT = True
+            try:
+                for oid in OWNER_IDS:
+                    await _.bot.send_message(chat_id=oid, text=f"ℹ️ התקבלה inline_query מ-{user_id} עם '{(update.inline_query.query or '').strip()}'")
+            except Exception:
+                pass
 
     q = (update.inline_query.query or "").strip() if update.inline_query else ""
     offset_text = update.inline_query.offset if update.inline_query else ""
@@ -404,37 +511,28 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     is_owner = allowed(update)
     qhash = hashlib.sha1(q.encode("utf-8")).hexdigest()[:12] if q else "noq"
 
-    # קיצורי דרך: להכין הודעה עם /sh או /py עבור הטקסט השלם שהוקלד
-    if q and current_offset == 0:
-        # כדי לאפשר "הרצה אמיתית" בבחירה, נכניס מטא-טוקן בתוך ה-id
+    # קיצורי דרך: חזרה למצב פשוט – כרטיסי הרצה עם כפתור רענון
+    if q and current_offset == 0 and is_owner:
         token = secrets.token_urlsafe(8)
-        INLINE_EXEC_STORE[token] = {
-            "type": "sh",
-            "q": q,
-            "user_id": user_id,
-            "ts": time.time(),
-        }
+        INLINE_EXEC_STORE[token] = {"type": "sh", "q": q, "user_id": user_id, "ts": time.time()}
         results.append(
             InlineQueryResultArticle(
                 id=f"run:{token}:sh:{current_offset}",
-                title=f"להריץ ב-/sh: {q}",
-                description="יבוצע ויוחלף בפלט בצ'אט",
-                input_message_content=InputTextMessageContent("⏳ מריץ…")
+                title=_shorten(f"להריץ ב-/sh: {q}", 64),
+                description=_shorten("יופיע 'מריץ…' ואז לחיצה על הכפתור תריץ", 120),
+                input_message_content=InputTextMessageContent("⏳ מריץ…"),
+                reply_markup=_make_refresh_markup(token),
             )
         )
         token_py = secrets.token_urlsafe(8)
-        INLINE_EXEC_STORE[token_py] = {
-            "type": "py",
-            "q": q,
-            "user_id": user_id,
-            "ts": time.time(),
-        }
+        INLINE_EXEC_STORE[token_py] = {"type": "py", "q": q, "user_id": user_id, "ts": time.time()}
         results.append(
             InlineQueryResultArticle(
                 id=f"run:{token_py}:py:{current_offset}",
-                title="להריץ ב-/py (בלוק קוד)",
-                description="יבוצע ויוחלף בפלט בצ'אט",
-                input_message_content=InputTextMessageContent("⏳ מריץ…")
+                title=_shorten("להריץ ב-/py (בלוק קוד)", 64),
+                description=_shorten("יופיע 'מריץ…' ואז לחיצה על הכפתור תריץ", 120),
+                input_message_content=InputTextMessageContent("⏳ מריץ…"),
+                reply_markup=_make_refresh_markup(token_py),
             )
         )
 
@@ -470,10 +568,52 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             )
         )
 
+    num_results = len(results) or 0
+    # Fallback אם משום מה אין תוצאות (לא אמור לקרות)
+    if num_results == 0:
+        results.append(
+            InlineQueryResultArticle(
+                id=f"fallback:{qhash}:{current_offset}",
+                title="אין תוצאות (לחץ ל-/help)",
+                description="לחיצה תשלח עזרה",
+                input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד>")
+            )
+        )
+        num_results = 1
+
     try:
         await update.inline_query.answer(results, cache_time=0, is_personal=True, next_offset=next_offset)
-    except BadRequest:
-        await update.inline_query.answer(results, cache_time=0, is_personal=True)
+        # דיבוג: דו"ח כמה תוצאות נשלחו
+        if INLINE_DEBUG_FLAG and OWNER_IDS:
+            try:
+                for oid in OWNER_IDS:
+                    await _.bot.send_message(
+                    chat_id=oid,
+                    text=(
+                        f"✅ inline: נשלחו {num_results} תוצאות "
+                        f"(owner={'yes' if is_owner else 'no'}, q='{q}', total_candidates={total}, "
+                        f"offset={current_offset}, next='{next_offset or '-'}')"
+                    ),
+                )
+            except Exception:
+                pass
+    except BadRequest as e:
+        # נסה ללא next_offset
+        try:
+            await update.inline_query.answer(results, cache_time=0, is_personal=True)
+            if INLINE_DEBUG_FLAG and OWNER_IDS:
+                try:
+                    for oid in OWNER_IDS:
+                        await _.bot.send_message(chat_id=oid, text=f"⚠️ inline עם שגיאה קלה (retry): {e}")
+                except Exception:
+                    pass
+        except Exception as ex:
+            if INLINE_DEBUG_FLAG and OWNER_IDS:
+                try:
+                    for oid in OWNER_IDS:
+                        await _.bot.send_message(chat_id=oid, text=f"❌ inline נכשל: {ex}")
+                except Exception:
+                    pass
 
 
 async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -491,6 +631,19 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             return
         token = parts[1]
         run_type = parts[2]
+        inline_msg_id = getattr(chosen, "inline_message_id", None)
+        if INLINE_DEBUG_FLAG and OWNER_IDS:
+            try:
+                for oid in OWNER_IDS:
+                    await _.bot.send_message(
+                    chat_id=oid,
+                    text=(
+                        f"🔎 chosen_inline: result_id='{result_id}', type={run_type}, "
+                        f"has_inline_message_id={'yes' if bool(inline_msg_id) else 'no'}"
+                    ),
+                )
+            except Exception:
+                pass
         data = INLINE_EXEC_STORE.get(token)
         if not data:
             return
@@ -501,7 +654,20 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             return
 
         user_id = chosen.from_user.id if chosen.from_user else 0
-        if user_id != OWNER_ID:
+        report_nowait(user_id)
+        if user_id not in OWNER_IDS:
+            # אם מי שבחר אינו הבעלים – נשלח לו הודעה פרטית עם הנחיות וה-ID שלו
+            try:
+                await _.bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        "⛔ אין לך הרשאה להריץ מהאינליין.\n"
+                        f"ה־ID שלך: {user_id}\n"
+                        "אם זה הבוט שלך, קבע OWNER_ID לערך הזה (או הוסף לרשימה) והפעל מחדש."
+                    ),
+                )
+            except Exception:
+                pass
             return
 
         q = normalize_code(str(data.get("q", ""))).strip()
@@ -553,7 +719,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             cleaned = normalize_code(cleaned).strip("\n") + "\n"
             try:
                 out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(exec_python_in_shared_context, cleaned, int(user_id)), timeout=TIMEOUT)
-                parts_out = []
+                parts_out = [cleaned.rstrip() + "\n\n"]
                 if out.strip():
                     parts_out.append(out.rstrip())
                 if err.strip():
@@ -562,39 +728,60 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
                     parts_out.append(tb_text.rstrip())
                 text_out = "\n".join(parts_out).strip() or "(no output)"
             except asyncio.TimeoutError:
-                text_out = "⏱️ Timeout"
+                text_out = cleaned.rstrip() + "\n\n⏱️ Timeout"
             except Exception as e:
-                text_out = f"ERR:\n{e}"
+                text_out = cleaned.rstrip() + f"\n\nERR:\n{e}"
         else:
             return
 
         text_out = _trim_for_message(text_out)
 
-        # סיבוב טוקן לרענון הבא
-        new_token = secrets.token_urlsafe(8)
-        INLINE_EXEC_STORE[new_token] = {
-            "type": run_type,
-            "q": q,
-            "user_id": user_id,
-            "ts": time.time(),
-        }
-        prune_inline_exec_store()
-
         # אם יש inline_message_id – נערוך את הודעת האינליין בצ'אט היעד
-        inline_msg_id = getattr(chosen, "inline_message_id", None)
         if inline_msg_id:
             try:
-                await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
+                full_text = text_out
+                display_text = full_text if len(full_text) <= INLINE_PREVIEW_MAX else (full_text[:INLINE_PREVIEW_MAX] + "\n\n…(נשלח קובץ מלא בפרטי)")
+                # סיבוב טוקן חדש כדי לאפשר רענון נוסף
+                new_token = secrets.token_urlsafe(8)
+                INLINE_EXEC_STORE[new_token] = {"type": run_type, "q": q, "user_id": user_id, "ts": time.time()}
+                prune_inline_exec_store()
+                await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=display_text, reply_markup=_make_refresh_markup(new_token))
+                if INLINE_DEBUG_FLAG and OWNER_IDS:
+                    try:
+                        for oid in OWNER_IDS:
+                            await _.bot.send_message(chat_id=oid, text="✏️ inline_message נערך בהצלחה")
+                    except Exception:
+                        pass
             except Exception:
                 # נפילה חכמה: שליחת הודעה פרטית לבעלים
                 try:
-                    await _.bot.send_message(chat_id=user_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
+                    new_token = secrets.token_urlsafe(8)
+                    INLINE_EXEC_STORE[new_token] = {"type": run_type, "q": q, "user_id": user_id, "ts": time.time()}
+                    prune_inline_exec_store()
+                    await _.bot.send_message(chat_id=user_id, text=display_text, reply_markup=_make_refresh_markup(new_token))
+                    if INLINE_DEBUG_FLAG and OWNER_IDS:
+                        try:
+                            for oid in OWNER_IDS:
+                                await _.bot.send_message(chat_id=oid, text="⚠️ עריכה נכשלה – נשלחה הודעה פרטית")
+                        except Exception:
+                            pass
                 except Exception:
                     pass
         else:
             # אין מזהה הודעת אינליין – שליחה פרטית לבעלים
             try:
-                await _.bot.send_message(chat_id=user_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
+                full_text = text_out
+                display_text = full_text if len(full_text) <= INLINE_PREVIEW_MAX else (full_text[:INLINE_PREVIEW_MAX] + "\n\n…(נשלח קובץ מלא בפרטי)")
+                new_token = secrets.token_urlsafe(8)
+                INLINE_EXEC_STORE[new_token] = {"type": run_type, "q": q, "user_id": user_id, "ts": time.time()}
+                prune_inline_exec_store()
+                await _.bot.send_message(chat_id=user_id, text=display_text, reply_markup=_make_refresh_markup(new_token))
+                if INLINE_DEBUG_FLAG and OWNER_IDS:
+                    try:
+                        for oid in OWNER_IDS:
+                            await _.bot.send_message(chat_id=oid, text="ℹ️ אין inline_message_id – נשלחה הודעה פרטית")
+                    except Exception:
+                        pass
             except Exception:
                 pass
     finally:
@@ -612,8 +799,54 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not query:
         return
     data = query.data or ""
-    if not data.startswith("refresh:"):
+    if not (data.startswith("refresh:") or data.startswith("page:") or data.startswith("sendfull:")):
         return
+    # שליחת קוד מלא בפרטי
+    if data.startswith("sendfull:"):
+        token = data.split(":", 1)[1]
+        rec = INLINE_EXEC_STORE.get(token)
+        if not rec:
+            return
+        if query.from_user and rec.get("user_id") != query.from_user.id:
+            return
+        q = str(rec.get("q", ""))
+        try:
+            bio = io.BytesIO(q.encode("utf-8"))
+            bio.name = "inline-code.py"
+            # ננסה לשלוח בפרטי. אם אין צ'אט פרטי פתוח, נבקש מהמשתמש להתחיל שיחה עם הבוט
+            try:
+                await _.bot.send_document(chat_id=query.from_user.id, document=bio, caption="(full code)")
+                await query.answer("נשלח אליך בפרטי", show_alert=False)
+            except Exception:
+                await query.answer("פתח שיחה פרטית עם הבוט ואז נסה שוב", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    # דפדוף עמודים לפני הרצה
+    if data.startswith("page:"):
+        try:
+            _, token, page_str = data.split(":", 2)
+            page_idx = int(page_str)
+        except Exception:
+            return
+        rec = INLINE_EXEC_STORE.get(token)
+        if not rec:
+            return
+        if query.from_user and rec.get("user_id") != query.from_user.id:
+            return
+        q = str(rec.get("q", ""))
+        run_type = rec.get("type")
+        pages = _split_to_chunks_by_lines((f"$ {q}" if run_type == "sh" else q), INLINE_PREVIEW_MAX)
+        page_idx = max(0, min(page_idx, max(0, len(pages) - 1)))
+        rec["page"] = page_idx
+        try:
+            await query.edit_message_text(text=f"⏳ מריץ…\n\n{pages[page_idx]}", reply_markup=_make_before_run_markup(token, len(pages), page_idx))
+            await query.answer()
+        except Exception:
+            pass
+        return
+
     token = data.split(":", 1)[1]
     rec = INLINE_EXEC_STORE.get(token)
     if not rec:
@@ -624,7 +857,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = query.from_user.id if query.from_user else 0
-    if user_id != OWNER_ID:
+    if user_id not in OWNER_IDS:
         try:
             await query.answer(text="⛔ אין הרשאה", show_alert=False)
         except Exception:
@@ -661,17 +894,11 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
             sess = _get_inline_session(str(user_id))
             try:
                 shell_exec = SHELL_EXECUTABLE or "/bin/bash"
-                p = subprocess.run(
-                    [shell_exec, "-c", q],
-                    capture_output=True,
-                    text=True,
-                    timeout=TIMEOUT,
-                    cwd=sess["cwd"],
-                    env=sess["env"],
-                )
+                p = await asyncio.to_thread(_run_shell_blocking, shell_exec, q, sess["cwd"], sess["env"], TIMEOUT)
                 out = p.stdout or ""
                 err = p.stderr or ""
-                resp = f"$ {q}\n\n{out}"
+                header = f"$ {q}\n\n"
+                resp = header + out
                 if err:
                     resp += "\nERR:\n" + err
                 text_out = resp
@@ -684,7 +911,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         cleaned = normalize_code(cleaned).strip("\n") + "\n"
         try:
             out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(exec_python_in_shared_context, cleaned, int(user_id)), timeout=TIMEOUT)
-            parts_out = []
+            parts_out = [cleaned.rstrip() + "\n\n"]
             if out.strip():
                 parts_out.append(out.rstrip())
             if err.strip():
@@ -693,9 +920,9 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 parts_out.append(tb_text.rstrip())
             text_out = "\n".join(parts_out).strip() or "(no output)"
         except asyncio.TimeoutError:
-            text_out = "⏱️ Timeout"
+            text_out = cleaned.rstrip() + "\n\n⏱️ Timeout"
         except Exception as e:
-            text_out = f"ERR:\n{e}"
+            text_out = cleaned.rstrip() + f"\n\nERR:\n{e}"
     else:
         try:
             await query.answer(text="⛔ סוג לא נתמך", show_alert=False)
@@ -703,22 +930,19 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    text_out = _trim_for_message(text_out)
-    new_token = secrets.token_urlsafe(8)
-    INLINE_EXEC_STORE[new_token] = {
-        "type": run_type,
-        "q": q,
-        "user_id": user_id,
-        "ts": time.time(),
-    }
-    prune_inline_exec_store()
+    full_text = text_out
+    display_text = full_text if len(full_text) <= INLINE_PREVIEW_MAX else (full_text[:INLINE_PREVIEW_MAX] + "\n\n…(נשלח קובץ מלא בפרטי)")
 
     try:
-        await query.edit_message_text(text=text_out, reply_markup=_make_refresh_markup(new_token))
+        # אחרי ריצה, נמשיך לאפשר רענון נוסף עם טוקן חדש
+        new_token = secrets.token_urlsafe(8)
+        INLINE_EXEC_STORE[new_token] = {"type": run_type, "q": q, "user_id": user_id, "ts": time.time()}
+        prune_inline_exec_store()
+        await query.edit_message_text(text=display_text, reply_markup=_make_refresh_markup(new_token))
         await query.answer()
     except Exception:
         try:
-            await _.bot.send_message(chat_id=user_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
+            await _.bot.send_message(chat_id=user_id, text=display_text)
             await query.answer()
         except Exception:
             pass
@@ -729,8 +953,17 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         prune_inline_exec_store()
     except Exception:
         pass
+
+    # אם קיצרנו – נשלח קובץ מלא בפרטי
+    try:
+        if len(full_text) > INLINE_PREVIEW_MAX and user_id:
+            bio = io.BytesIO(full_text.encode("utf-8"))
+            bio.name = "inline-output.txt"
+            await _.bot.send_document(chat_id=user_id, document=bio, caption="(full output)")
+    except Exception:
+        pass
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return
 
@@ -788,7 +1021,7 @@ def _parse_cmds_args(arg_text: str) -> set:
 
 
 async def list_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return await update.message.reply_text("❌ אין הרשאה")
     if not ALLOWED_CMDS:
@@ -797,7 +1030,7 @@ async def list_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def allow_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return await update.message.reply_text("❌ אין הרשאה")
     args = update.message.text.partition(" ")[2]
@@ -812,7 +1045,7 @@ async def allow_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def deny_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return await update.message.reply_text("❌ אין הרשאה")
     args = update.message.text.partition(" ")[2]
@@ -830,7 +1063,7 @@ async def deny_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def update_allow_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return await update.message.reply_text("❌ אין הרשאה")
     args = update.message.text.partition(" ")[2]
@@ -844,7 +1077,7 @@ async def update_allow_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return
 
@@ -916,7 +1149,7 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def env_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return
     sess = get_session(update)
@@ -925,7 +1158,7 @@ async def env_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def reset_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return
     chat_id = _chat_id(update)
@@ -934,7 +1167,7 @@ async def reset_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
 
 async def health_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return
     try:
@@ -944,8 +1177,31 @@ async def health_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ אין חיבור")
 
 
+async def whoami_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """מציג את מזהה המשתמש שלך (user id) לנוחות הגדרת OWNER_ID."""
+    uid = update.effective_user.id if update.effective_user else 0
+    await update.message.reply_text(str(uid))
+
+
+async def debug_on_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    global INLINE_DEBUG_FLAG, INLINE_DEBUG_SENT
+    if not allowed(update):
+        return
+    INLINE_DEBUG_FLAG = True
+    INLINE_DEBUG_SENT = False
+    await update.message.reply_text("✅ Debug ON")
+
+
+async def debug_off_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    global INLINE_DEBUG_FLAG
+    if not allowed(update):
+        return
+    INLINE_DEBUG_FLAG = False
+    await update.message.reply_text("✅ Debug OFF")
+
+
 async def restart_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
         return
     try:
@@ -979,13 +1235,16 @@ def main():
 
         app.add_handler(InlineQueryHandler(inline_query))
         app.add_handler(ChosenInlineResultHandler(on_chosen_inline_result))
-        app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^refresh:\w[\w-]*$"))
+        app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^refresh:"))
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
         app.add_handler(CommandHandler("env", env_cmd))
         app.add_handler(CommandHandler("reset", reset_cmd))
         app.add_handler(CommandHandler("health", health_cmd))
+        app.add_handler(CommandHandler("whoami", whoami_cmd))
+        app.add_handler(CommandHandler("debug_on", debug_on_cmd))
+        app.add_handler(CommandHandler("debug_off", debug_off_cmd))
         app.add_handler(CommandHandler("restart", restart_cmd))
         app.add_handler(CommandHandler("list", list_cmd))
         app.add_handler(CommandHandler("allow", allow_cmd))
@@ -993,7 +1252,11 @@ def main():
         app.add_handler(CommandHandler("update", update_allow_cmd))
 
         try:
-            app.run_polling(drop_pending_updates=True, poll_interval=1.5, timeout=10)
+            app.run_polling(
+                drop_pending_updates=True,
+                poll_interval=1.5,
+                timeout=10,
+            )
         except Conflict:
             # אינסטנס אחר רץ – נחכה וננסה שוב
             time.sleep(int(os.getenv("CONFLICT_RETRY_DELAY", "120")))
