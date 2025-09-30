@@ -651,7 +651,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             cleaned = normalize_code(cleaned).strip("\n") + "\n"
             try:
                 out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(exec_python_in_shared_context, cleaned, int(user_id)), timeout=TIMEOUT)
-                parts_out = []
+                parts_out = [f"/py:\n{cleaned.rstrip()}\n\n"]
                 if out.strip():
                     parts_out.append(out.rstrip())
                 if err.strip():
@@ -660,28 +660,18 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
                     parts_out.append(tb_text.rstrip())
                 text_out = "\n".join(parts_out).strip() or "(no output)"
             except asyncio.TimeoutError:
-                text_out = "⏱️ Timeout"
+                text_out = f"/py:\n{cleaned.rstrip()}\n\n⏱️ Timeout"
             except Exception as e:
-                text_out = f"ERR:\n{e}"
+                text_out = f"/py:\n{cleaned.rstrip()}\n\nERR:\n{e}"
         else:
             return
 
         text_out = _trim_for_message(text_out)
 
-        # סיבוב טוקן לרענון הבא
-        new_token = secrets.token_urlsafe(8)
-        INLINE_EXEC_STORE[new_token] = {
-            "type": run_type,
-            "q": q,
-            "user_id": user_id,
-            "ts": time.time(),
-        }
-        prune_inline_exec_store()
-
         # אם יש inline_message_id – נערוך את הודעת האינליין בצ'אט היעד
         if inline_msg_id:
             try:
-                await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
+                await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=text_out)
                 if INLINE_DEBUG_FLAG and OWNER_ID:
                     try:
                         await _.bot.send_message(chat_id=OWNER_ID, text="✏️ inline_message נערך בהצלחה")
@@ -690,7 +680,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 # נפילה חכמה: שליחת הודעה פרטית לבעלים
                 try:
-                    await _.bot.send_message(chat_id=user_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
+                    await _.bot.send_message(chat_id=user_id, text=text_out)
                     if INLINE_DEBUG_FLAG and OWNER_ID:
                         try:
                             await _.bot.send_message(chat_id=OWNER_ID, text="⚠️ עריכה נכשלה – נשלחה הודעה פרטית")
@@ -701,7 +691,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
         else:
             # אין מזהה הודעת אינליין – שליחה פרטית לבעלים
             try:
-                await _.bot.send_message(chat_id=user_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
+                await _.bot.send_message(chat_id=user_id, text=text_out)
                 if INLINE_DEBUG_FLAG and OWNER_ID:
                     try:
                         await _.bot.send_message(chat_id=OWNER_ID, text="ℹ️ אין inline_message_id – נשלחה הודעה פרטית")
@@ -773,17 +763,11 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
             sess = _get_inline_session(str(user_id))
             try:
                 shell_exec = SHELL_EXECUTABLE or "/bin/bash"
-                p = subprocess.run(
-                    [shell_exec, "-c", q],
-                    capture_output=True,
-                    text=True,
-                    timeout=TIMEOUT,
-                    cwd=sess["cwd"],
-                    env=sess["env"],
-                )
+                p = await asyncio.to_thread(_run_shell_blocking, shell_exec, q, sess["cwd"], sess["env"], TIMEOUT)
                 out = p.stdout or ""
                 err = p.stderr or ""
-                resp = f"$ {q}\n\n{out}"
+                header = f"$ {q}\n\n"
+                resp = header + out
                 if err:
                     resp += "\nERR:\n" + err
                 text_out = resp
@@ -796,7 +780,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         cleaned = normalize_code(cleaned).strip("\n") + "\n"
         try:
             out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(exec_python_in_shared_context, cleaned, int(user_id)), timeout=TIMEOUT)
-            parts_out = []
+            parts_out = [f"/py:\n{cleaned.rstrip()}\n\n"]
             if out.strip():
                 parts_out.append(out.rstrip())
             if err.strip():
@@ -805,9 +789,9 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 parts_out.append(tb_text.rstrip())
             text_out = "\n".join(parts_out).strip() or "(no output)"
         except asyncio.TimeoutError:
-            text_out = "⏱️ Timeout"
+            text_out = f"/py:\n{cleaned.rstrip()}\n\n⏱️ Timeout"
         except Exception as e:
-            text_out = f"ERR:\n{e}"
+            text_out = f"/py:\n{cleaned.rstrip()}\n\nERR:\n{e}"
     else:
         try:
             await query.answer(text="⛔ סוג לא נתמך", show_alert=False)
@@ -826,11 +810,11 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
     prune_inline_exec_store()
 
     try:
-        await query.edit_message_text(text=text_out, reply_markup=_make_refresh_markup(new_token))
+        await query.edit_message_text(text=text_out)
         await query.answer()
     except Exception:
         try:
-            await _.bot.send_message(chat_id=user_id, text=text_out, reply_markup=_make_refresh_markup(new_token))
+            await _.bot.send_message(chat_id=user_id, text=text_out)
             await query.answer()
         except Exception:
             pass
