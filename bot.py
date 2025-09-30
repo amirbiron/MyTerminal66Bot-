@@ -105,6 +105,8 @@ PY_CONTEXT = {}
 INLINE_EXEC_STORE = {}
 INLINE_SESSIONS = {}
 INLINE_EXEC_TTL = int(os.getenv("INLINE_EXEC_TTL", "180"))
+INLINE_EXEC_MAX = int(os.getenv("INLINE_EXEC_MAX", "5000"))
+INLINE_EXEC_SWEEP_SEC = int(os.getenv("INLINE_EXEC_SWEEP_SEC", "300"))
 
 
 def _get_inline_session(session_key: str):
@@ -149,6 +151,30 @@ def _make_refresh_markup(token: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 רענון", callback_data=f"refresh:{token}")]
     ])
+
+
+def prune_inline_exec_store(now_ts: float | None = None) -> tuple[int, int]:
+    """מסיר רשומות פגות תוקף, ומגביל גודל מקסימלי ע"פ זמן ישן ביותר.
+    מחזיר (expired_removed, trimmed_removed).
+    """
+    try:
+        now = float(now_ts) if now_ts is not None else time.time()
+        # הסרת פגי תוקף
+        expired_keys = [k for k, v in INLINE_EXEC_STORE.items() if now - float(v.get("ts", 0)) > INLINE_EXEC_TTL]
+        for k in expired_keys:
+            INLINE_EXEC_STORE.pop(k, None)
+        trimmed = 0
+        # הגבלת גודל
+        if len(INLINE_EXEC_STORE) > INLINE_EXEC_MAX:
+            # מחיקה לפי הישן ביותר
+            by_age = sorted(INLINE_EXEC_STORE.items(), key=lambda kv: float(kv[1].get("ts", 0)))
+            overflow = len(INLINE_EXEC_STORE) - INLINE_EXEC_MAX
+            for i in range(overflow):
+                INLINE_EXEC_STORE.pop(by_age[i][0], None)
+                trimmed += 1
+        return (len(expired_keys), trimmed)
+    except Exception:
+        return (0, 0)
 
 
 # ==== עזר ====
@@ -372,6 +398,8 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         current_offset = 0
 
     PAGE_SIZE = 10
+    # ניקוי קל לפני יצירת טוקנים חדשים
+    prune_inline_exec_store()
     results = []
     is_owner = allowed(update)
     qhash = hashlib.sha1(q.encode("utf-8")).hexdigest()[:12] if q else "noq"
@@ -469,6 +497,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
         # ניקוי רשומה אם ישנה זמן רב
         if time.time() - float(data.get("ts", 0)) > INLINE_EXEC_TTL:
             INLINE_EXEC_STORE.pop(token, None)
+            prune_inline_exec_store()
             return
 
         user_id = chosen.from_user.id if chosen.from_user else 0
@@ -549,6 +578,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             "user_id": user_id,
             "ts": time.time(),
         }
+        prune_inline_exec_store()
 
         # אם יש inline_message_id – נערוך את הודעת האינליין בצ'אט היעד
         inline_msg_id = getattr(chosen, "inline_message_id", None)
@@ -572,6 +602,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
         try:
             if token:
                 INLINE_EXEC_STORE.pop(token, None)
+            prune_inline_exec_store()
         except Exception:
             pass
 
@@ -602,6 +633,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
     if time.time() - float(rec.get("ts", 0)) > INLINE_EXEC_TTL:
         INLINE_EXEC_STORE.pop(token, None)
+        prune_inline_exec_store()
         try:
             await query.answer(text="⛔ פג תוקף, נסה שוב מהאינליין", show_alert=False)
         except Exception:
@@ -679,6 +711,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         "user_id": user_id,
         "ts": time.time(),
     }
+    prune_inline_exec_store()
 
     try:
         await query.edit_message_text(text=text_out, reply_markup=_make_refresh_markup(new_token))
@@ -693,6 +726,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
     # נקה טוקן ישן
     try:
         INLINE_EXEC_STORE.pop(token, None)
+        prune_inline_exec_store()
     except Exception:
         pass
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
