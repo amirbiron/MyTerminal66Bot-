@@ -223,7 +223,10 @@ def _make_before_run_markup(token: str, total_pages: int, page_idx: int) -> Inli
         nav_row.append(InlineKeyboardButton("הבא ➡️", callback_data=f"page:{token}:{page_idx+1}"))
     if nav_row:
         buttons.append(nav_row)
-    buttons.append([InlineKeyboardButton("🔄 רענון", callback_data=f"refresh:{token}")])
+    buttons.append([
+        InlineKeyboardButton("🔄 רענון", callback_data=f"refresh:{token}"),
+        InlineKeyboardButton("📄 שלח קוד מלא", callback_data=f"sendfull:{token}"),
+    ])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -802,8 +805,26 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not query:
         return
     data = query.data or ""
-    if not (data.startswith("refresh:") or data.startswith("page:")):
+    if not (data.startswith("refresh:") or data.startswith("page:") or data.startswith("sendfull:")):
         return
+    # שליחת קוד מלא בפרטי
+    if data.startswith("sendfull:"):
+        token = data.split(":", 1)[1]
+        rec = INLINE_EXEC_STORE.get(token)
+        if not rec:
+            return
+        if query.from_user and rec.get("user_id") != query.from_user.id:
+            return
+        q = str(rec.get("q", ""))
+        try:
+            bio = io.BytesIO(q.encode("utf-8"))
+            bio.name = "inline-code.py"
+            await _.bot.send_document(chat_id=query.from_user.id, document=bio, caption="(full code)")
+            await query.answer("נשלח אליך בפרטי", show_alert=False)
+        except Exception:
+            pass
+        return
+
     # דפדוף עמודים לפני הרצה
     if data.startswith("page:"):
         try:
