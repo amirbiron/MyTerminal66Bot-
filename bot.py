@@ -111,6 +111,7 @@ INLINE_EXEC_SWEEP_SEC = int(os.getenv("INLINE_EXEC_SWEEP_SEC", "300"))
 # דגל דיבוג: ניתן להדליק/לכבות עם ENV או פקודות /debug_on /debug_off
 INLINE_DEBUG_FLAG = os.getenv("INLINE_DEBUG", "").lower() in ("1", "true", "yes", "on")
 INLINE_DEBUG_SENT = False
+INLINE_PREVIEW_MAX = int(os.getenv("INLINE_PREVIEW_MAX", "800"))
 
 
 def _get_inline_session(session_key: str):
@@ -671,7 +672,9 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
         # אם יש inline_message_id – נערוך את הודעת האינליין בצ'אט היעד
         if inline_msg_id:
             try:
-                await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=text_out)
+                full_text = text_out
+                display_text = full_text if len(full_text) <= INLINE_PREVIEW_MAX else (full_text[:INLINE_PREVIEW_MAX] + "\n\n…(נשלח קובץ מלא בפרטי)")
+                await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=display_text)
                 if INLINE_DEBUG_FLAG and OWNER_ID:
                     try:
                         await _.bot.send_message(chat_id=OWNER_ID, text="✏️ inline_message נערך בהצלחה")
@@ -680,7 +683,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 # נפילה חכמה: שליחת הודעה פרטית לבעלים
                 try:
-                    await _.bot.send_message(chat_id=user_id, text=text_out)
+                    await _.bot.send_message(chat_id=user_id, text=display_text)
                     if INLINE_DEBUG_FLAG and OWNER_ID:
                         try:
                             await _.bot.send_message(chat_id=OWNER_ID, text="⚠️ עריכה נכשלה – נשלחה הודעה פרטית")
@@ -691,7 +694,9 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
         else:
             # אין מזהה הודעת אינליין – שליחה פרטית לבעלים
             try:
-                await _.bot.send_message(chat_id=user_id, text=text_out)
+                full_text = text_out
+                display_text = full_text if len(full_text) <= INLINE_PREVIEW_MAX else (full_text[:INLINE_PREVIEW_MAX] + "\n\n…(נשלח קובץ מלא בפרטי)")
+                await _.bot.send_message(chat_id=user_id, text=display_text)
                 if INLINE_DEBUG_FLAG and OWNER_ID:
                     try:
                         await _.bot.send_message(chat_id=OWNER_ID, text="ℹ️ אין inline_message_id – נשלחה הודעה פרטית")
@@ -799,22 +804,15 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    text_out = _trim_for_message(text_out)
-    new_token = secrets.token_urlsafe(8)
-    INLINE_EXEC_STORE[new_token] = {
-        "type": run_type,
-        "q": q,
-        "user_id": user_id,
-        "ts": time.time(),
-    }
-    prune_inline_exec_store()
+    full_text = text_out
+    display_text = full_text if len(full_text) <= INLINE_PREVIEW_MAX else (full_text[:INLINE_PREVIEW_MAX] + "\n\n…(נשלח קובץ מלא בפרטי)")
 
     try:
-        await query.edit_message_text(text=text_out)
+        await query.edit_message_text(text=display_text)
         await query.answer()
     except Exception:
         try:
-            await _.bot.send_message(chat_id=user_id, text=text_out)
+            await _.bot.send_message(chat_id=user_id, text=display_text)
             await query.answer()
         except Exception:
             pass
@@ -823,6 +821,15 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
     try:
         INLINE_EXEC_STORE.pop(token, None)
         prune_inline_exec_store()
+    except Exception:
+        pass
+
+    # אם קיצרנו – נשלח קובץ מלא בפרטי
+    try:
+        if len(full_text) > INLINE_PREVIEW_MAX and user_id:
+            bio = io.BytesIO(full_text.encode("utf-8"))
+            bio.name = "inline-output.txt"
+            await _.bot.send_document(chat_id=user_id, document=bio, caption="(full output)")
     except Exception:
         pass
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
