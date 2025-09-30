@@ -504,22 +504,29 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     try:
         await update.inline_query.answer(results, cache_time=0, is_personal=True, next_offset=next_offset)
         # דיבוג: דו"ח כמה תוצאות נשלחו
-        if OWNER_ID and not INLINE_DEBUG_SENT:
+        if OWNER_ID:
             try:
-                await _.bot.send_message(chat_id=OWNER_ID, text=f"✅ inline: נשלחו {num_results} תוצאות (offset={current_offset}, next='{next_offset or '-'}')")
+                await _.bot.send_message(
+                    chat_id=OWNER_ID,
+                    text=(
+                        f"✅ inline: נשלחו {num_results} תוצאות "
+                        f"(owner={'yes' if is_owner else 'no'}, q='{q}', total_candidates={total}, "
+                        f"offset={current_offset}, next='{next_offset or '-'}')"
+                    ),
+                )
             except Exception:
                 pass
     except BadRequest as e:
         # נסה ללא next_offset
         try:
             await update.inline_query.answer(results, cache_time=0, is_personal=True)
-            if OWNER_ID and not INLINE_DEBUG_SENT:
+            if OWNER_ID:
                 try:
                     await _.bot.send_message(chat_id=OWNER_ID, text=f"⚠️ inline עם שגיאה קלה (retry): {e}")
                 except Exception:
                     pass
         except Exception as ex:
-            if OWNER_ID and not INLINE_DEBUG_SENT:
+            if OWNER_ID:
                 try:
                     await _.bot.send_message(chat_id=OWNER_ID, text=f"❌ inline נכשל: {ex}")
                 except Exception:
