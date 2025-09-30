@@ -149,6 +149,17 @@ def _trim_for_message(text: str) -> str:
     if len(text) > TG_MAX_MESSAGE:
         return text[:TG_MAX_MESSAGE]
     return text
+def _run_shell_blocking(shell_exec: str, q: str, cwd: str, env: dict, timeout_sec: int):
+    """מריץ פקודת shell בצורה חסימתית (להרצה בתוך ת׳רד)."""
+    return subprocess.run(
+        [shell_exec, "-c", q],
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+        cwd=cwd,
+        env=env,
+    )
+
 
 
 def _make_refresh_markup(token: str) -> InlineKeyboardMarkup:
@@ -449,10 +460,10 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         }
         results.append(
             InlineQueryResultArticle(
-                id=f"run:{token}:sh:{current_offset}",
-                title=f"להריץ ב-/sh: {q}",
-                description="יבוצע ויוחלף בפלט בצ'אט",
-                input_message_content=InputTextMessageContent("⏳ מריץ…")
+                id=f"cmdsh:{qhash}:{current_offset}",
+                title=f"/sh {q}",
+                description="לחיצה תשלח /sh עם הפקודה",
+                input_message_content=InputTextMessageContent(f"/sh {q}")
             )
         )
         token_py = secrets.token_urlsafe(8)
@@ -464,10 +475,10 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         }
         results.append(
             InlineQueryResultArticle(
-                id=f"run:{token_py}:py:{current_offset}",
-                title="להריץ ב-/py (בלוק קוד)",
-                description="יבוצע ויוחלף בפלט בצ'אט",
-                input_message_content=InputTextMessageContent("⏳ מריץ…")
+                id=f"cmdpy:{qhash}:{current_offset}",
+                title="/py (שליחה מיידית)",
+                description="לחיצה תשלח /py עם הטקסט השלם",
+                input_message_content=InputTextMessageContent(f"/py {q}")
             )
         )
 
