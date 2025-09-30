@@ -30,7 +30,7 @@ import logging
 
 from activity_reporter import create_reporter
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
-from telegram.ext import Application, CommandHandler, ContextTypes, InlineQueryHandler
+from telegram.ext import Application, CommandHandler, ContextTypes, InlineQueryHandler, ChosenInlineResultHandler
 from telegram.error import NetworkError, TimedOut, Conflict, BadRequest
 
 # ==== תצורה ====
@@ -112,6 +112,23 @@ sessions = {}
 # ==== הקשר גלובלי לסשן פייתון מתמשך (לפי chat_id) ====
 # מיפוי chat_id -> context dict לשמירת מצב פייתון לכל צ'אט בנפרד
 PY_CONTEXT = {}
+
+
+def _exec_in_context(src: str, chat_id: int):
+    global PY_CONTEXT
+    ctx = PY_CONTEXT.get(chat_id)
+    if ctx is None:
+        ctx = {"__builtins__": __builtins__}
+        PY_CONTEXT[chat_id] = ctx
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+    tb_text = None
+    try:
+        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            exec(src, ctx, ctx)
+    except Exception:
+        tb_text = traceback.format_exc()
+    return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
 
 
 # ==== עזר ====
@@ -228,6 +245,45 @@ async def send_output(update: Update, text: str, filename: str = "output.txt"):
         except Exception:
             pass
 
+
+# שליחת פלט לצ'אט לפי chat_id (ללא קשר להודעה קיימת)
+async def send_output_to_chat(bot, chat_id: int, text: str, filename: str = "output.txt"):
+    text = text or "(no output)"
+    if len(text) <= TG_MAX_MESSAGE:
+        await bot.send_message(chat_id=chat_id, text=text)
+        return
+
+    # שליחת תצוגה מקדימה
+    try:
+        lines = text.splitlines()
+        preview_lines = []
+        current_len = 0
+        limit = max(0, TG_MAX_MESSAGE - len("(output truncated)\n"))
+        for ln in lines:
+            add_len = len(ln) + (1 if preview_lines else 0)
+            if current_len + add_len > limit:
+                break
+            preview_lines.append(ln)
+            current_len += add_len
+        preview = ("\n".join(preview_lines) + "\n(output truncated)") if preview_lines else "(output truncated)"
+        await bot.send_message(chat_id=chat_id, text=preview[:TG_MAX_MESSAGE])
+    except Exception:
+        pass
+
+    # קובץ מלא
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=os.path.splitext(filename)[1] or ".txt", encoding="utf-8") as tf:
+            tf.write(text)
+            tmp_path = tf.name
+        with open(tmp_path, "rb") as fh:
+            await bot.send_document(chat_id=chat_id, document=fh, filename=filename, caption="(full output)")
+    finally:
+        try:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
 
 # Load allowlist from file at import time (fallback to ENV/default already set)
 load_allowed_cmds_from_file()
@@ -352,13 +408,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    """תמיכה במצב אינליין: מציע תוצאות מסוג InlineQueryResultArticle.
-    - מסנן מתוך ALLOWED_CMDS לפי הטקסט שהוקלד
-    - מחזיר פאגינציה בעזרת next_offset
-    - מוסיף קיצורי דרך להרצת /sh או /py עם הטקסט המלא
-    """
+    """תמיכה באינליין עם פאגינציה, קיצורי דרך, והרצה ישירה לבעלים."""
     logger.debug("inline_query called")
-    
+
     try:
         user_id = update.inline_query.from_user.id if update.inline_query and update.inline_query.from_user else 0
     except Exception as e:
@@ -368,9 +420,9 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
     q = (update.inline_query.query or "").strip() if update.inline_query else ""
     offset_text = update.inline_query.offset if update.inline_query else ""
-    
+
     logger.debug(f"Query: '{q}', Offset: '{offset_text}', User ID: {user_id}")
-    
+
     try:
         current_offset = int(offset_text) if offset_text else 0
     except ValueError:
@@ -380,12 +432,39 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     results = []
     is_owner = allowed(update)
     qhash = hashlib.sha1(q.encode("utf-8")).hexdigest()[:12] if q else "noq"
-    
     logger.debug(f"is_owner: {is_owner}, qhash: {qhash}")
 
-    # קיצורי דרך: להכין הודעה עם /sh או /py עבור הטקסט השלם שהוקלד
+    # אפשרויות להרצה ישירה בפרטי (לבעלים), או הודעת "אין הרשאה" לאחרים
+    if q:
+        if is_owner:
+            results.append(
+                InlineQueryResultArticle(
+                    id=f"run-sh:{qhash}",
+                    title=f"הרץ כפקודת Shell: {q}",
+                    description="הפלט יישלח אליך בפרטי",
+                    input_message_content=InputTextMessageContent("⏳ מריץ ושולח פלט בפרטי…")
+                )
+            )
+            results.append(
+                InlineQueryResultArticle(
+                    id=f"run-py:{qhash}",
+                    title="הרץ כ־Python",
+                    description="הפלט יישלח אליך בפרטי",
+                    input_message_content=InputTextMessageContent("⏳ מריץ ושולח פלט בפרטי…")
+                )
+            )
+        else:
+            results.append(
+                InlineQueryResultArticle(
+                    id=f"noauth:{qhash}",
+                    title="אין הרשאה",
+                    description="רק בעל הבוט יכול להריץ",
+                    input_message_content=InputTextMessageContent("❌ אין הרשאה להשתמש בהרצה דרך אינליין")
+                )
+            )
+
+    # קיצורי דרך להכנת הודעה עם /sh או /py (בדף הראשון)
     if q and current_offset == 0:
-        logger.debug(f"Adding shortcut results for query: {q}")
         results.append(
             InlineQueryResultArticle(
                 id=f"echo-sh:{qhash}:{current_offset}",
@@ -403,8 +482,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             )
         )
 
-    # הצעות מתוך רשימת הפקודות המותרות, עם פאגינציה
-    # הערה: מראים פקודות רק אם המשתמש הוא הבעלים
+    # הצעות מתוך רשימת הפקודות המותרות, עם פאגינציה (לבעלים בלבד)
     candidates = []
     if is_owner:
         candidates = sorted(ALLOWED_CMDS)
@@ -412,11 +490,10 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             ql = q.lower()
             candidates = [c for c in candidates if ql in c.lower()]
     else:
-        # למשתמשים אחרים - מראים הודעת עזרה בלבד
         logger.debug(f"User {user_id} is not owner, showing limited results")
 
     logger.debug(f"Found {len(candidates)} candidates for owner: {is_owner}")
-    
+
     total = len(candidates)
     page_slice = candidates[current_offset: current_offset + PAGE_SIZE]
     for idx, cmd in enumerate(page_slice):
@@ -435,13 +512,13 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         logger.debug("No results, adding help message")
         results.append(
             InlineQueryResultArticle(
-                id=f"help:{qhash}:{current_offset}",
+                id=f"help:{qhash}",
                 title="איך משתמשים באינליין?",
                 description="כתבו @שם_הבוט ואז טקסט לחיפוש, למשל 'curl'",
                 input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד>")
             )
         )
-    
+
     logger.debug(f"Total results to send: {len(results)}, next_offset: '{next_offset}'")
 
     try:
@@ -455,6 +532,120 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Unexpected error in inline_query: {e}")
         # שגיאה לא צפויה - מעבירים הלאה לטיפול כללי
         raise
+
+async def chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """כאשר המשתמש בוחר תוצאת אינליין, נריץ בפועל ונשלח את הפלט אל הצ'אט הפרטי שלו."""
+    cir = update.chosen_inline_result
+    if not cir:
+        return
+    try:
+        user_id = cir.from_user.id if cir.from_user else 0
+    except Exception:
+        user_id = 0
+    reporter.report_activity(user_id)
+
+    result_id = cir.result_id or ""
+    q = (cir.query or "").strip()
+
+    # הרשאה: רק בעל הבוט
+    if user_id != OWNER_ID:
+        try:
+            await send_output_to_chat(context.bot, user_id, "❌ אין הרשאה", "inline-output.txt")
+        except Exception:
+            # אין אפשרות לשלוח בפרטי – אין לנו access להודעת האינליין לעריכה כאן
+            pass
+        finally:
+            return
+
+    # ננרמל טקסט
+    q = normalize_code(q)
+
+    try:
+        if result_id.startswith("run-sh:"):
+            # בדיקת allowlist על הטוקן הראשון
+            if not ALLOW_ALL_COMMANDS:
+                try:
+                    parts = shlex.split(q, posix=True)
+                except ValueError:
+                    await send_output_to_chat(context.bot, user_id, "❗ שגיאת פרסינג", "inline-output.txt")
+                    return
+                if not parts:
+                    await send_output_to_chat(context.bot, user_id, "❗ אין פקודה", "inline-output.txt")
+                    return
+                first_token = parts[0].strip()
+                if first_token and first_token not in ALLOWED_CMDS:
+                    await send_output_to_chat(context.bot, user_id, f"❗ פקודה לא מאושרת: {first_token}", "inline-output.txt")
+                    return
+
+            shell_exec = SHELL_EXECUTABLE or "/bin/bash"
+            # נשתמש בסשן לפי הצ'אט הפרטי (user_id) כדי לשמור cwd/env
+            sess = sessions.get(user_id)
+            if not sess:
+                sess = {"cwd": os.getcwd(), "env": dict(os.environ)}
+                sessions[user_id] = sess
+            try:
+                p = subprocess.run(
+                    [shell_exec, "-c", q],
+                    capture_output=True,
+                    text=True,
+                    timeout=min(TIMEOUT, 8),
+                    cwd=sess["cwd"],
+                    env=sess["env"],
+                )
+                out = p.stdout or ""
+                err = p.stderr or ""
+                resp = f"$ {q}\n\n{out}"
+                if err:
+                    resp += "\nERR:\n" + err
+                resp = truncate(resp.strip() or "(no output)")
+            except subprocess.TimeoutExpired:
+                resp = f"$ {q}\n\n⏱️ Timeout"
+            except Exception as e:
+                resp = truncate(f"$ {q}\n\nERR:\n{e}")
+
+            try:
+                await send_output_to_chat(context.bot, user_id, resp, "inline-output.txt")
+            except Exception:
+                pass
+            return
+
+        if result_id.startswith("run-py:"):
+            cleaned = textwrap.dedent(q)
+            cleaned = normalize_code(cleaned).strip("\n") + "\n"
+
+            async def _run_py():
+                # הרצה עם אותו הקשר (PY_CONTEXT) לפי user_id
+                out, err, tb_text = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: _exec_in_context(cleaned, user_id)), timeout=min(TIMEOUT, 8)
+                )
+                parts = []
+                if out.strip():
+                    parts.append(out.rstrip())
+                if err.strip():
+                    parts.append("STDERR:\n" + err.rstrip())
+                if tb_text and tb_text.strip():
+                    parts.append(tb_text.rstrip())
+                return "\n".join(parts).strip() or "(no output)"
+
+            try:
+                resp = await _run_py()
+            except asyncio.TimeoutError:
+                resp = "⏱️ Timeout"
+            except Exception as e:
+                resp = f"ERR:\n{e}"
+
+            try:
+                await send_output_to_chat(context.bot, user_id, truncate(resp), "inline-py-output.txt")
+            except Exception:
+                pass
+            return
+
+    except Exception as e:
+        # הגנה כללית – לא להפיל את הבוט בגלל אינליין
+        try:
+            await send_output_to_chat(context.bot, user_id, f"ERR (inline):\n{e}", "inline-error.txt")
+        finally:
+            return
 
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     reporter.report_activity(update.effective_user.id if update.effective_user else 0)
@@ -583,23 +774,7 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     cleaned = textwrap.dedent(code)
     cleaned = normalize_code(cleaned).strip("\n") + "\n"
 
-    def _exec_in_context(src: str, chat_id: int):
-        global PY_CONTEXT
-        # אתחול ראשוני של הקשר ההרצה לצ'אט הנוכחי
-        ctx = PY_CONTEXT.get(chat_id)
-        if ctx is None:
-            ctx = {"__builtins__": __builtins__}
-            PY_CONTEXT[chat_id] = ctx
-        stdout_buffer = io.StringIO()
-        stderr_buffer = io.StringIO()
-        tb_text = None
-        try:
-            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                exec(src, ctx, ctx)
-        except Exception:
-            tb_text = traceback.format_exc()
-        return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
-
+    # שימוש בגרסת _exec_in_context הגלובלית
     try:
         chat_id = _chat_id(update)
         out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
@@ -753,6 +928,7 @@ def main():
         app = Application.builder().token(token).post_init(on_post_init).build()
 
         app.add_handler(InlineQueryHandler(inline_query))
+        app.add_handler(ChosenInlineResultHandler(chosen_inline_result))
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
