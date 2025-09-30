@@ -296,10 +296,46 @@ async def on_post_init(app: Application) -> None:
 
 
 # ==== פקודות ====
-async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    
+    # בדיקה אם האינליין מופעל
+    bot_info = await context.bot.get_me()
+    inline_status = "✅ מופעל" if bot_info.supports_inline_queries else "❌ כבוי"
+    
     if not allowed(update):
-        return await update.message.reply_text("/sh <פקודת shell>\n/py <קוד פייתון>\n/health\n/restart\n/env\n/reset\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)")
+        return await update.message.reply_text(
+            f"🤖 ברוכים הבאים!\n\n"
+            f"פקודות זמינות:\n"
+            f"/sh <פקודת shell>\n"
+            f"/py <קוד פייתון>\n"
+            f"/health - בדיקת חיבור\n"
+            f"/restart - אתחול מחדש\n"
+            f"/env - הצגת משתני סביבה\n"
+            f"/reset - איפוס סשן\n\n"
+            f"פקודות לבעלים בלבד:\n"
+            f"/allow, /deny, /list, /update\n\n"
+            f"מצב אינליין: {inline_status}\n"
+            f"{'💡 כדי להפעיל אינליין: דברו עם @BotFather' if not bot_info.supports_inline_queries else f'💡 שימוש: @{bot_info.username} <חיפוש>'}"
+        )
+    
+    # הודעה לבעלים
+    await update.message.reply_text(
+        f"👋 שלום בוס!\n\n"
+        f"מצב אינליין: {inline_status}\n"
+        f"{'⚠️ האינליין כבוי! כדי להפעיל:\n1. לכו ל-@BotFather\n2. /mybots\n3. בחרו את הבוט\n4. Bot Settings → Inline Mode → Turn on' if not bot_info.supports_inline_queries else f'✅ אינליין פעיל! נסו @{bot_info.username} בכל צאט'}\n\n"
+        f"פקודות זמינות:\n"
+        f"/sh <פקודה> - הרצת shell\n"
+        f"/py <קוד> - הרצת Python\n"
+        f"/allow <cmd> - הוספת פקודה\n"
+        f"/deny <cmd> - הסרת פקודה\n"
+        f"/list - רשימת פקודות מותרות\n"
+        f"/update <cmds> - עדכון רשימה\n"
+        f"/env - משתני סביבה\n"
+        f"/reset - איפוס סשן\n"
+        f"/health - בדיקת חיבור\n"
+        f"/restart - אתחול מחדש"
+    )
 
 
 async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -308,14 +344,21 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     - מחזיר פאגינציה בעזרת next_offset
     - מוסיף קיצורי דרך להרצת /sh או /py עם הטקסט המלא
     """
+    # לוג כניסה לפונקציה
+    print(f"[DEBUG] inline_query called")
+    
     try:
         user_id = update.inline_query.from_user.id if update.inline_query and update.inline_query.from_user else 0
-    except Exception:
+    except Exception as e:
+        print(f"[DEBUG] Error getting user_id: {e}")
         user_id = 0
     reporter.report_activity(user_id)
 
     q = (update.inline_query.query or "").strip() if update.inline_query else ""
     offset_text = update.inline_query.offset if update.inline_query else ""
+    
+    print(f"[DEBUG] Query: '{q}', Offset: '{offset_text}', User ID: {user_id}")
+    
     try:
         current_offset = int(offset_text) if offset_text else 0
     except ValueError:
@@ -325,9 +368,12 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     results = []
     is_owner = allowed(update)
     qhash = hashlib.sha1(q.encode("utf-8")).hexdigest()[:12] if q else "noq"
+    
+    print(f"[DEBUG] is_owner: {is_owner}, qhash: {qhash}")
 
     # קיצורי דרך: להכין הודעה עם /sh או /py עבור הטקסט השלם שהוקלד
     if q and current_offset == 0:
+        print(f"[DEBUG] Adding shortcut results for query: {q}")
         results.append(
             InlineQueryResultArticle(
                 id=f"echo-sh:{qhash}:{current_offset}",
@@ -346,19 +392,25 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         )
 
     # הצעות מתוך רשימת הפקודות המותרות, עם פאגינציה
+    # הערה: מראים פקודות רק אם המשתמש הוא הבעלים
     candidates = []
     if is_owner:
         candidates = sorted(ALLOWED_CMDS)
         if q:
             ql = q.lower()
             candidates = [c for c in candidates if ql in c.lower()]
+    else:
+        # למשתמשים אחרים - מראים הודעת עזרה בלבד
+        print(f"[DEBUG] User {user_id} is not owner, showing limited results")
+    
+    print(f"[DEBUG] Found {len(candidates)} candidates for owner: {is_owner}")
 
     total = len(candidates)
     page_slice = candidates[current_offset: current_offset + PAGE_SIZE]
-    for cmd in page_slice:
+    for idx, cmd in enumerate(page_slice):
         results.append(
             InlineQueryResultArticle(
-                id=f"cmd:{qhash}:{current_offset}:{cmd}",
+                id=f"cmd:{qhash}:{current_offset+idx}:{cmd}",
                 title=f"/sh {cmd}",
                 description="לחיצה תכין הודעת /sh עם הפקודה",
                 input_message_content=InputTextMessageContent(f"/sh {cmd}")
@@ -368,6 +420,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     next_offset = str(current_offset + PAGE_SIZE) if (current_offset + PAGE_SIZE) < total else ""
 
     if not results and current_offset == 0:
+        print(f"[DEBUG] No results, adding help message")
         results.append(
             InlineQueryResultArticle(
                 id=f"help:{qhash}:{current_offset}",
@@ -376,12 +429,19 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד>")
             )
         )
+    
+    print(f"[DEBUG] Total results to send: {len(results)}, next_offset: '{next_offset}'")
 
     try:
         await update.inline_query.answer(results, cache_time=0, is_personal=True, next_offset=next_offset)
-    except BadRequest:
+        print(f"[DEBUG] Successfully sent inline query answer")
+    except BadRequest as e:
+        print(f"[DEBUG] BadRequest error: {e}")
         # במקרה של בעיית מזהים כפולים/קלט לא תקין, ננסה לענות ללא next_offset
         await update.inline_query.answer(results, cache_time=0, is_personal=True)
+    except Exception as e:
+        print(f"[DEBUG] Unexpected error in inline_query: {e}")
+        raise
 
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     reporter.report_activity(update.effective_user.id if update.effective_user else 0)
@@ -616,6 +676,44 @@ async def restart_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     os._exit(0)
 
 
+async def inline_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """בדיקת מצב האינליין והדרכה להפעלה"""
+    reporter.report_activity(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return
+    
+    bot_info = await context.bot.get_me()
+    
+    if bot_info.supports_inline_queries:
+        await update.message.reply_text(
+            f"✅ האינליין מופעל!\n\n"
+            f"איך להשתמש:\n"
+            f"1. בכל צ'אט, כתבו: @{bot_info.username}\n"
+            f"2. המתינו שניה לתוצאות\n"
+            f"3. הקלידו טקסט לחיפוש פקודות\n\n"
+            f"דוגמאות:\n"
+            f"• @{bot_info.username} curl\n"
+            f"• @{bot_info.username} python\n"
+            f"• @{bot_info.username} ls\n\n"
+            f"💡 טיפ: האינליין עובד בכל צ'אט, לא רק כאן!"
+        )
+    else:
+        await update.message.reply_text(
+            f"❌ האינליין כבוי!\n\n"
+            f"כדי להפעיל:\n"
+            f"1. לכו ל-@BotFather\n"
+            f"2. שלחו /mybots\n"
+            f"3. בחרו: @{bot_info.username}\n"
+            f"4. לחצו על: Bot Settings\n"
+            f"5. לחצו על: Inline Mode\n"
+            f"6. לחצו על: Turn on\n\n"
+            f"אופציונלי:\n"
+            f"• הגדירו Inline feedback ל-100%\n"
+            f"• הגדירו placeholder text\n\n"
+            f"אחרי ההפעלה, הריצו /restart ואז /inline_status שוב"
+        )
+
+
 # ==== main ====
 def main():
     # לוגים שקטים (רק ERROR) כדי למנוע ספאם
@@ -643,6 +741,7 @@ def main():
         app.add_handler(CommandHandler("allow", allow_cmd))
         app.add_handler(CommandHandler("deny", deny_cmd))
         app.add_handler(CommandHandler("update", update_allow_cmd))
+        app.add_handler(CommandHandler("inline_status", inline_status_cmd))
 
         try:
             app.run_polling(drop_pending_updates=True, poll_interval=1.5, timeout=10)
