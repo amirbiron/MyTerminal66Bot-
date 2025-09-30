@@ -405,7 +405,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     qhash = hashlib.sha1(q.encode("utf-8")).hexdigest()[:12] if q else "noq"
 
     # קיצורי דרך: להכין הודעה עם /sh או /py עבור הטקסט השלם שהוקלד
-    if q and current_offset == 0:
+    if q and current_offset == 0 and is_owner:
         # כדי לאפשר "הרצה אמיתית" בבחירה, נכניס מטא-טוקן בתוך ה-id
         token = secrets.token_urlsafe(8)
         INLINE_EXEC_STORE[token] = {
@@ -502,6 +502,18 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
         user_id = chosen.from_user.id if chosen.from_user else 0
         if user_id != OWNER_ID:
+            # אם מי שבחר אינו הבעלים – נשלח לו הודעה פרטית עם הנחיות וה-ID שלו
+            try:
+                await _.bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        "⛔ אין לך הרשאה להריץ מהאינליין.\n"
+                        f"ה־ID שלך: {user_id}\n"
+                        "אם זה הבוט שלך, קבע OWNER_ID לערך הזה בסביבה והפעל מחדש."
+                    ),
+                )
+            except Exception:
+                pass
             return
 
         q = normalize_code(str(data.get("q", ""))).strip()
@@ -944,6 +956,12 @@ async def health_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ אין חיבור")
 
 
+async def whoami_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """מציג את מזהה המשתמש שלך (user id) לנוחות הגדרת OWNER_ID."""
+    uid = update.effective_user.id if update.effective_user else 0
+    await update.message.reply_text(str(uid))
+
+
 async def restart_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     reporter.report_activity(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
@@ -986,6 +1004,7 @@ def main():
         app.add_handler(CommandHandler("env", env_cmd))
         app.add_handler(CommandHandler("reset", reset_cmd))
         app.add_handler(CommandHandler("health", health_cmd))
+        app.add_handler(CommandHandler("whoami", whoami_cmd))
         app.add_handler(CommandHandler("restart", restart_cmd))
         app.add_handler(CommandHandler("list", list_cmd))
         app.add_handler(CommandHandler("allow", allow_cmd))
@@ -993,7 +1012,12 @@ def main():
         app.add_handler(CommandHandler("update", update_allow_cmd))
 
         try:
-            app.run_polling(drop_pending_updates=True, poll_interval=1.5, timeout=10)
+            app.run_polling(
+                allowed_updates=["message", "inline_query", "callback_query", "chosen_inline_result"],
+                drop_pending_updates=True,
+                poll_interval=1.5,
+                timeout=10,
+            )
         except Conflict:
             # אינסטנס אחר רץ – נחכה וננסה שוב
             time.sleep(int(os.getenv("CONFLICT_RETRY_DELAY", "120")))
