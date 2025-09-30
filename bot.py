@@ -511,44 +511,28 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     is_owner = allowed(update)
     qhash = hashlib.sha1(q.encode("utf-8")).hexdigest()[:12] if q else "noq"
 
-    # קיצורי דרך: להכין הודעה עם /sh או /py עבור הטקסט השלם שהוקלד
+    # קיצורי דרך: חזרה למצב פשוט – כרטיסי הרצה עם כפתור רענון
     if q and current_offset == 0 and is_owner:
-        # כדי לאפשר "הרצה אמיתית" בבחירה, נכניס מטא-טוקן בתוך ה-id
         token = secrets.token_urlsafe(8)
-        INLINE_EXEC_STORE[token] = {
-            "type": "sh",
-            "q": q,
-            "user_id": user_id,
-            "ts": time.time(),
-            "page": 0,
-        }
-        # פיצול הקלט לעמודים לפני הרצה
-        sh_pages = _split_to_chunks_by_lines(f"$ {q}", INLINE_PREVIEW_MAX)
+        INLINE_EXEC_STORE[token] = {"type": "sh", "q": q, "user_id": user_id, "ts": time.time()}
         results.append(
             InlineQueryResultArticle(
                 id=f"run:{token}:sh:{current_offset}",
                 title=_shorten(f"להריץ ב-/sh: {q}", 64),
-                description=_shorten("עיון בקוד בעמודים ואז הרצה", 120),
-                input_message_content=InputTextMessageContent(_shorten(f"⏳ מריץ…\n\n{sh_pages[0]}", 3500)),
-                reply_markup=_make_before_run_markup(token, len(sh_pages), 0),
+                description=_shorten("יופיע 'מריץ…' ואז לחיצה על הכפתור תריץ", 120),
+                input_message_content=InputTextMessageContent("⏳ מריץ…"),
+                reply_markup=_make_refresh_markup(token),
             )
         )
         token_py = secrets.token_urlsafe(8)
-        INLINE_EXEC_STORE[token_py] = {
-            "type": "py",
-            "q": q,
-            "user_id": user_id,
-            "ts": time.time(),
-            "page": 0,
-        }
-        py_pages = _split_to_chunks_by_lines(q, INLINE_PREVIEW_MAX)
+        INLINE_EXEC_STORE[token_py] = {"type": "py", "q": q, "user_id": user_id, "ts": time.time()}
         results.append(
             InlineQueryResultArticle(
                 id=f"run:{token_py}:py:{current_offset}",
                 title=_shorten("להריץ ב-/py (בלוק קוד)", 64),
-                description=_shorten("עיון בקוד בעמודים ואז הרצה", 120),
-                input_message_content=InputTextMessageContent(_shorten(f"⏳ מריץ…\n\n{py_pages[0]}", 3500)),
-                reply_markup=_make_before_run_markup(token_py, len(py_pages), 0),
+                description=_shorten("יופיע 'מריץ…' ואז לחיצה על הכפתור תריץ", 120),
+                input_message_content=InputTextMessageContent("⏳ מריץ…"),
+                reply_markup=_make_refresh_markup(token_py),
             )
         )
 
@@ -1237,7 +1221,7 @@ def main():
 
         app.add_handler(InlineQueryHandler(inline_query))
         app.add_handler(ChosenInlineResultHandler(on_chosen_inline_result))
-        app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^(refresh|page|sendfull):"))
+        app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^refresh:"))
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
