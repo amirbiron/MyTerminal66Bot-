@@ -741,7 +741,11 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             try:
                 full_text = text_out
                 display_text = full_text if len(full_text) <= INLINE_PREVIEW_MAX else (full_text[:INLINE_PREVIEW_MAX] + "\n\n…(נשלח קובץ מלא בפרטי)")
-                await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=display_text)
+                # סיבוב טוקן חדש כדי לאפשר רענון נוסף
+                new_token = secrets.token_urlsafe(8)
+                INLINE_EXEC_STORE[new_token] = {"type": run_type, "q": q, "user_id": user_id, "ts": time.time()}
+                prune_inline_exec_store()
+                await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=display_text, reply_markup=_make_refresh_markup(new_token))
                 if INLINE_DEBUG_FLAG and OWNER_IDS:
                     try:
                         for oid in OWNER_IDS:
@@ -751,7 +755,10 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 # נפילה חכמה: שליחת הודעה פרטית לבעלים
                 try:
-                    await _.bot.send_message(chat_id=user_id, text=display_text)
+                    new_token = secrets.token_urlsafe(8)
+                    INLINE_EXEC_STORE[new_token] = {"type": run_type, "q": q, "user_id": user_id, "ts": time.time()}
+                    prune_inline_exec_store()
+                    await _.bot.send_message(chat_id=user_id, text=display_text, reply_markup=_make_refresh_markup(new_token))
                     if INLINE_DEBUG_FLAG and OWNER_IDS:
                         try:
                             for oid in OWNER_IDS:
@@ -765,7 +772,10 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             try:
                 full_text = text_out
                 display_text = full_text if len(full_text) <= INLINE_PREVIEW_MAX else (full_text[:INLINE_PREVIEW_MAX] + "\n\n…(נשלח קובץ מלא בפרטי)")
-                await _.bot.send_message(chat_id=user_id, text=display_text)
+                new_token = secrets.token_urlsafe(8)
+                INLINE_EXEC_STORE[new_token] = {"type": run_type, "q": q, "user_id": user_id, "ts": time.time()}
+                prune_inline_exec_store()
+                await _.bot.send_message(chat_id=user_id, text=display_text, reply_markup=_make_refresh_markup(new_token))
                 if INLINE_DEBUG_FLAG and OWNER_IDS:
                     try:
                         for oid in OWNER_IDS:
@@ -924,7 +934,11 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
     display_text = full_text if len(full_text) <= INLINE_PREVIEW_MAX else (full_text[:INLINE_PREVIEW_MAX] + "\n\n…(נשלח קובץ מלא בפרטי)")
 
     try:
-        await query.edit_message_text(text=display_text)
+        # אחרי ריצה, נמשיך לאפשר רענון נוסף עם טוקן חדש
+        new_token = secrets.token_urlsafe(8)
+        INLINE_EXEC_STORE[new_token] = {"type": run_type, "q": q, "user_id": user_id, "ts": time.time()}
+        prune_inline_exec_store()
+        await query.edit_message_text(text=display_text, reply_markup=_make_refresh_markup(new_token))
         await query.answer()
     except Exception:
         try:
