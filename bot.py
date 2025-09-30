@@ -460,10 +460,11 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         }
         results.append(
             InlineQueryResultArticle(
-                id=f"cmdsh:{qhash}:{current_offset}",
-                title=f"/sh {q}",
-                description="לחיצה תשלח /sh עם הפקודה",
-                input_message_content=InputTextMessageContent(f"/sh {q}")
+                id=f"run:{token}:sh:{current_offset}",
+                title=f"להריץ ב-/sh: {q}",
+                description="יופיע \"מריץ…\" ואז לחיצה על הכפתור תריץ",
+                input_message_content=InputTextMessageContent("⏳ מריץ…"),
+                reply_markup=_make_refresh_markup(token),
             )
         )
         token_py = secrets.token_urlsafe(8)
@@ -475,10 +476,11 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         }
         results.append(
             InlineQueryResultArticle(
-                id=f"cmdpy:{qhash}:{current_offset}",
-                title="/py (שליחה מיידית)",
-                description="לחיצה תשלח /py עם הטקסט השלם",
-                input_message_content=InputTextMessageContent(f"/py {q}")
+                id=f"run:{token_py}:py:{current_offset}",
+                title="להריץ ב-/py (בלוק קוד)",
+                description="יופיע \"מריץ…\" ואז לחיצה על הכפתור תריץ",
+                input_message_content=InputTextMessageContent("⏳ מריץ…"),
+                reply_markup=_make_refresh_markup(token_py),
             )
         )
 
