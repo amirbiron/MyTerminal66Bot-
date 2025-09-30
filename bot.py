@@ -3,6 +3,14 @@
 
 import os
 import sys
+
+# טעינת משתני סביבה מקובץ .env אם קיים
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # אם python-dotenv לא מותקן, ממשיכים בלעדיו
+    pass
 import shlex
 import json
 import time
