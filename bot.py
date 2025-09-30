@@ -108,7 +108,8 @@ INLINE_EXEC_TTL = int(os.getenv("INLINE_EXEC_TTL", "180"))
 INLINE_EXEC_MAX = int(os.getenv("INLINE_EXEC_MAX", "5000"))
 INLINE_EXEC_SWEEP_SEC = int(os.getenv("INLINE_EXEC_SWEEP_SEC", "300"))
 
-# דגל דיבוג כדי לא להציף הודעות
+# דגל דיבוג: ניתן להדליק/לכבות עם ENV או פקודות /debug_on /debug_off
+INLINE_DEBUG_FLAG = os.getenv("INLINE_DEBUG", "").lower() in ("1", "true", "yes", "on")
 INLINE_DEBUG_SENT = False
 
 
@@ -383,11 +384,12 @@ async def on_post_init(app: Application) -> None:
                     except Exception:
                         pass
         # הודעת בדיקה לבעלים על אתחול
-        try:
-            if OWNER_ID:
-                await app.bot.send_message(chat_id=OWNER_ID, text="🟢 הבוט עלה (polling)")
-        except Exception:
-            pass
+        if INLINE_DEBUG_FLAG:
+            try:
+                if OWNER_ID:
+                    await app.bot.send_message(chat_id=OWNER_ID, text="🟢 הבוט עלה (polling)")
+            except Exception:
+                pass
     except Exception:
         # לא מפיל את הבוט אם יש בעיות הרשאות/קובץ
         pass
@@ -412,13 +414,14 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         user_id = 0
     report_nowait(user_id)
     # הודעת דיבוג חד פעמית לבעלים כדי לוודא שאינליין מגיע
-    global INLINE_DEBUG_SENT
-    if not INLINE_DEBUG_SENT and OWNER_ID:
-        INLINE_DEBUG_SENT = True
-        try:
-            await _.bot.send_message(chat_id=OWNER_ID, text=f"ℹ️ התקבלה inline_query מ-{user_id} עם '{(update.inline_query.query or '').strip()}'")
-        except Exception:
-            pass
+    if INLINE_DEBUG_FLAG:
+        global INLINE_DEBUG_SENT
+        if not INLINE_DEBUG_SENT and OWNER_ID:
+            INLINE_DEBUG_SENT = True
+            try:
+                await _.bot.send_message(chat_id=OWNER_ID, text=f"ℹ️ התקבלה inline_query מ-{user_id} עם '{(update.inline_query.query or '').strip()}'")
+            except Exception:
+                pass
 
     q = (update.inline_query.query or "").strip() if update.inline_query else ""
     offset_text = update.inline_query.offset if update.inline_query else ""
@@ -504,7 +507,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     try:
         await update.inline_query.answer(results, cache_time=0, is_personal=True, next_offset=next_offset)
         # דיבוג: דו"ח כמה תוצאות נשלחו
-        if OWNER_ID:
+        if INLINE_DEBUG_FLAG and OWNER_ID:
             try:
                 await _.bot.send_message(
                     chat_id=OWNER_ID,
@@ -520,13 +523,13 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         # נסה ללא next_offset
         try:
             await update.inline_query.answer(results, cache_time=0, is_personal=True)
-            if OWNER_ID:
+            if INLINE_DEBUG_FLAG and OWNER_ID:
                 try:
                     await _.bot.send_message(chat_id=OWNER_ID, text=f"⚠️ inline עם שגיאה קלה (retry): {e}")
                 except Exception:
                     pass
         except Exception as ex:
-            if OWNER_ID:
+            if INLINE_DEBUG_FLAG and OWNER_ID:
                 try:
                     await _.bot.send_message(chat_id=OWNER_ID, text=f"❌ inline נכשל: {ex}")
                 except Exception:
@@ -1020,6 +1023,23 @@ async def whoami_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(str(uid))
 
 
+async def debug_on_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    global INLINE_DEBUG_FLAG, INLINE_DEBUG_SENT
+    if not allowed(update):
+        return
+    INLINE_DEBUG_FLAG = True
+    INLINE_DEBUG_SENT = False
+    await update.message.reply_text("✅ Debug ON")
+
+
+async def debug_off_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    global INLINE_DEBUG_FLAG
+    if not allowed(update):
+        return
+    INLINE_DEBUG_FLAG = False
+    await update.message.reply_text("✅ Debug OFF")
+
+
 async def restart_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
@@ -1063,6 +1083,8 @@ def main():
         app.add_handler(CommandHandler("reset", reset_cmd))
         app.add_handler(CommandHandler("health", health_cmd))
         app.add_handler(CommandHandler("whoami", whoami_cmd))
+        app.add_handler(CommandHandler("debug_on", debug_on_cmd))
+        app.add_handler(CommandHandler("debug_off", debug_off_cmd))
         app.add_handler(CommandHandler("restart", restart_cmd))
         app.add_handler(CommandHandler("list", list_cmd))
         app.add_handler(CommandHandler("allow", allow_cmd))
