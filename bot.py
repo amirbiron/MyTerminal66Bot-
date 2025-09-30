@@ -114,6 +114,13 @@ INLINE_DEBUG_SENT = False
 INLINE_PREVIEW_MAX = int(os.getenv("INLINE_PREVIEW_MAX", "800"))
 
 
+def _shorten(text: str, limit: int) -> str:
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
 def _get_inline_session(session_key: str):
     sess = INLINE_SESSIONS.get(session_key)
     if not sess:
@@ -501,9 +508,9 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         results.append(
             InlineQueryResultArticle(
                 id=f"run:{token}:sh:{current_offset}",
-                title=f"להריץ ב-/sh: {q}",
-                description="עיון בקוד בעמודים ואז הרצה",
-                input_message_content=InputTextMessageContent(f"⏳ מריץ…\n\n{sh_pages[0]}"),
+                title=_shorten(f"להריץ ב-/sh: {q}", 64),
+                description=_shorten("עיון בקוד בעמודים ואז הרצה", 120),
+                input_message_content=InputTextMessageContent(_shorten(f"⏳ מריץ…\n\n{sh_pages[0]}", 3500)),
                 reply_markup=_make_before_run_markup(token, len(sh_pages), 0),
             )
         )
@@ -519,9 +526,9 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
         results.append(
             InlineQueryResultArticle(
                 id=f"run:{token_py}:py:{current_offset}",
-                title="להריץ ב-/py (בלוק קוד)",
-                description="עיון בקוד בעמודים ואז הרצה",
-                input_message_content=InputTextMessageContent(f"⏳ מריץ…\n\n{py_pages[0]}"),
+                title=_shorten("להריץ ב-/py (בלוק קוד)", 64),
+                description=_shorten("עיון בקוד בעמודים ואז הרצה", 120),
+                input_message_content=InputTextMessageContent(_shorten(f"⏳ מריץ…\n\n{py_pages[0]}", 3500)),
                 reply_markup=_make_before_run_markup(token_py, len(py_pages), 0),
             )
         )
@@ -558,7 +565,19 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             )
         )
 
-    num_results = len(results)
+    num_results = len(results) or 0
+    # Fallback אם משום מה אין תוצאות (לא אמור לקרות)
+    if num_results == 0:
+        results.append(
+            InlineQueryResultArticle(
+                id=f"fallback:{qhash}:{current_offset}",
+                title="אין תוצאות (לחץ ל-/help)",
+                description="לחיצה תשלח עזרה",
+                input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד>")
+            )
+        )
+        num_results = 1
+
     try:
         await update.inline_query.answer(results, cache_time=0, is_personal=True, next_offset=next_offset)
         # דיבוג: דו"ח כמה תוצאות נשלחו
