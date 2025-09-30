@@ -819,8 +819,12 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         try:
             bio = io.BytesIO(q.encode("utf-8"))
             bio.name = "inline-code.py"
-            await _.bot.send_document(chat_id=query.from_user.id, document=bio, caption="(full code)")
-            await query.answer("נשלח אליך בפרטי", show_alert=False)
+            # ננסה לשלוח בפרטי. אם אין צ'אט פרטי פתוח, נבקש מהמשתמש להתחיל שיחה עם הבוט
+            try:
+                await _.bot.send_document(chat_id=query.from_user.id, document=bio, caption="(full code)")
+                await query.answer("נשלח אליך בפרטי", show_alert=False)
+            except Exception:
+                await query.answer("פתח שיחה פרטית עם הבוט ואז נסה שוב", show_alert=True)
         except Exception:
             pass
         return
@@ -1233,7 +1237,7 @@ def main():
 
         app.add_handler(InlineQueryHandler(inline_query))
         app.add_handler(ChosenInlineResultHandler(on_chosen_inline_result))
-        app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^(refresh|page):"))
+        app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^(refresh|page|sendfull):"))
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
