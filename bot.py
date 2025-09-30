@@ -18,6 +18,7 @@ import contextlib
 import unicodedata
 import re
 import hashlib
+import logging
 
 from activity_reporter import create_reporter
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
@@ -31,6 +32,10 @@ PIP_TIMEOUT = int(os.getenv("PIP_TIMEOUT", "120"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
 TG_MAX_MESSAGE = int(os.getenv("TG_MAX_MESSAGE", "4000"))
 RESTART_NOTIFY_PATH = os.getenv("RESTART_NOTIFY_PATH", "/tmp/bot_restart_notify.json")
+DEBUG_MODE = os.getenv("DEBUG_MODE", "").lower() in ("1", "true", "yes", "on")
+
+# יצירת לוגר לבוט
+logger = logging.getLogger(__name__)
 
 def _parse_cmds_string(value: str) -> set:
     """Parses comma/newline separated command names into a set, trimming blanks."""
@@ -344,20 +349,19 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     - מחזיר פאגינציה בעזרת next_offset
     - מוסיף קיצורי דרך להרצת /sh או /py עם הטקסט המלא
     """
-    # לוג כניסה לפונקציה
-    print(f"[DEBUG] inline_query called")
+    logger.debug("inline_query called")
     
     try:
         user_id = update.inline_query.from_user.id if update.inline_query and update.inline_query.from_user else 0
     except Exception as e:
-        print(f"[DEBUG] Error getting user_id: {e}")
+        logger.debug(f"Error getting user_id: {e}")
         user_id = 0
     reporter.report_activity(user_id)
 
     q = (update.inline_query.query or "").strip() if update.inline_query else ""
     offset_text = update.inline_query.offset if update.inline_query else ""
     
-    print(f"[DEBUG] Query: '{q}', Offset: '{offset_text}', User ID: {user_id}")
+    logger.debug(f"Query: '{q}', Offset: '{offset_text}', User ID: {user_id}")
     
     try:
         current_offset = int(offset_text) if offset_text else 0
@@ -369,11 +373,11 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     is_owner = allowed(update)
     qhash = hashlib.sha1(q.encode("utf-8")).hexdigest()[:12] if q else "noq"
     
-    print(f"[DEBUG] is_owner: {is_owner}, qhash: {qhash}")
+    logger.debug(f"is_owner: {is_owner}, qhash: {qhash}")
 
     # קיצורי דרך: להכין הודעה עם /sh או /py עבור הטקסט השלם שהוקלד
     if q and current_offset == 0:
-        print(f"[DEBUG] Adding shortcut results for query: {q}")
+        logger.debug(f"Adding shortcut results for query: {q}")
         results.append(
             InlineQueryResultArticle(
                 id=f"echo-sh:{qhash}:{current_offset}",
@@ -401,10 +405,10 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             candidates = [c for c in candidates if ql in c.lower()]
     else:
         # למשתמשים אחרים - מראים הודעת עזרה בלבד
-        print(f"[DEBUG] User {user_id} is not owner, showing limited results")
-    
-    print(f"[DEBUG] Found {len(candidates)} candidates for owner: {is_owner}")
+        logger.debug(f"User {user_id} is not owner, showing limited results")
 
+    logger.debug(f"Found {len(candidates)} candidates for owner: {is_owner}")
+    
     total = len(candidates)
     page_slice = candidates[current_offset: current_offset + PAGE_SIZE]
     for idx, cmd in enumerate(page_slice):
@@ -420,7 +424,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     next_offset = str(current_offset + PAGE_SIZE) if (current_offset + PAGE_SIZE) < total else ""
 
     if not results and current_offset == 0:
-        print(f"[DEBUG] No results, adding help message")
+        logger.debug("No results, adding help message")
         results.append(
             InlineQueryResultArticle(
                 id=f"help:{qhash}:{current_offset}",
@@ -430,17 +434,18 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             )
         )
     
-    print(f"[DEBUG] Total results to send: {len(results)}, next_offset: '{next_offset}'")
+    logger.debug(f"Total results to send: {len(results)}, next_offset: '{next_offset}'")
 
     try:
         await update.inline_query.answer(results, cache_time=0, is_personal=True, next_offset=next_offset)
-        print(f"[DEBUG] Successfully sent inline query answer")
+        logger.debug("Successfully sent inline query answer")
     except BadRequest as e:
-        print(f"[DEBUG] BadRequest error: {e}")
+        logger.warning(f"BadRequest error in inline_query: {e}")
         # במקרה של בעיית מזהים כפולים/קלט לא תקין, ננסה לענות ללא next_offset
         await update.inline_query.answer(results, cache_time=0, is_personal=True)
     except Exception as e:
-        print(f"[DEBUG] Unexpected error in inline_query: {e}")
+        logger.error(f"Unexpected error in inline_query: {e}")
+        # שגיאה לא צפויה - מעבירים הלאה לטיפול כללי
         raise
 
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -716,11 +721,21 @@ async def inline_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==== main ====
 def main():
-    # לוגים שקטים (רק ERROR) כדי למנוע ספאם
-    import logging
-    logging.basicConfig(level=logging.CRITICAL)
+    # הגדרת רמת לוגים לפי מצב דיבוג
+    if DEBUG_MODE:
+        log_level = logging.DEBUG
+        logging.basicConfig(
+            level=log_level,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+    else:
+        # לוגים שקטים (רק CRITICAL) כדי למנוע ספאם
+        log_level = logging.CRITICAL
+        logging.basicConfig(level=log_level)
+    
+    # הגדרת לוגרים לספריות חיצוניות
     for n in ("telegram", "telegram.ext", "httpx"):
-        logging.getLogger(n).setLevel(logging.CRITICAL)
+        logging.getLogger(n).setLevel(log_level)
 
     token = os.getenv("BOT_TOKEN")
     if not token:
