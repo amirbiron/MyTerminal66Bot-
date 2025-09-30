@@ -108,6 +108,9 @@ INLINE_EXEC_TTL = int(os.getenv("INLINE_EXEC_TTL", "180"))
 INLINE_EXEC_MAX = int(os.getenv("INLINE_EXEC_MAX", "5000"))
 INLINE_EXEC_SWEEP_SEC = int(os.getenv("INLINE_EXEC_SWEEP_SEC", "300"))
 
+# דגל דיבוג כדי לא להציף הודעות
+INLINE_DEBUG_SENT = False
+
 
 def _get_inline_session(session_key: str):
     sess = INLINE_SESSIONS.get(session_key)
@@ -379,6 +382,12 @@ async def on_post_init(app: Application) -> None:
                         os.remove(RESTART_NOTIFY_PATH)
                     except Exception:
                         pass
+        # הודעת בדיקה לבעלים על אתחול
+        try:
+            if OWNER_ID:
+                await app.bot.send_message(chat_id=OWNER_ID, text="🟢 הבוט עלה (polling)")
+        except Exception:
+            pass
     except Exception:
         # לא מפיל את הבוט אם יש בעיות הרשאות/קובץ
         pass
@@ -402,6 +411,14 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     except Exception:
         user_id = 0
     report_nowait(user_id)
+    # הודעת דיבוג חד פעמית לבעלים כדי לוודא שאינליין מגיע
+    global INLINE_DEBUG_SENT
+    if not INLINE_DEBUG_SENT and OWNER_ID:
+        INLINE_DEBUG_SENT = True
+        try:
+            await _.bot.send_message(chat_id=OWNER_ID, text=f"ℹ️ התקבלה inline_query מ-{user_id} עם '{(update.inline_query.query or '').strip()}'")
+        except Exception:
+            pass
 
     q = (update.inline_query.query or "").strip() if update.inline_query else ""
     offset_text = update.inline_query.offset if update.inline_query else ""
@@ -1027,7 +1044,6 @@ def main():
 
         try:
             app.run_polling(
-                allowed_updates=["message", "inline_query", "callback_query", "chosen_inline_result"],
                 drop_pending_updates=True,
                 poll_interval=1.5,
                 timeout=10,
