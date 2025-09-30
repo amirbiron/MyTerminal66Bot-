@@ -408,11 +408,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    """תמיכה במצב אינליין: מציע תוצאות מסוג InlineQueryResultArticle.
-    - מעכשיו הבחירה באמת מריצה ושולחת את הפלט אליך בפרטי (chosen_inline_result)
-    """
+    """תמיכה באינליין עם פאגינציה, קיצורי דרך, והרצה ישירה לבעלים."""
     logger.debug("inline_query called")
-    
+
     try:
         user_id = update.inline_query.from_user.id if update.inline_query and update.inline_query.from_user else 0
     except Exception as e:
@@ -421,27 +419,24 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
     reporter.report_activity(user_id)
 
     q = (update.inline_query.query or "").strip() if update.inline_query else ""
-<<<<<<< HEAD
-=======
     offset_text = update.inline_query.offset if update.inline_query else ""
-    
+
     logger.debug(f"Query: '{q}', Offset: '{offset_text}', User ID: {user_id}")
-    
+
     try:
         current_offset = int(offset_text) if offset_text else 0
     except ValueError:
         current_offset = 0
 
     PAGE_SIZE = 10
->>>>>>> origin/main
     results = []
     is_owner = allowed(update)
     qhash = hashlib.sha1(q.encode("utf-8")).hexdigest()[:12] if q else "noq"
-    
-<<<<<<< HEAD
+    logger.debug(f"is_owner: {is_owner}, qhash: {qhash}")
+
+    # אפשרויות להרצה ישירה בפרטי (לבעלים), או הודעת "אין הרשאה" לאחרים
     if q:
         if is_owner:
-            # שתי אופציות: להריץ כ-Shell או כ-Python; הפלט יישלח בפרטי
             results.append(
                 InlineQueryResultArticle(
                     id=f"run-sh:{qhash}",
@@ -449,19 +444,6 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                     description="הפלט יישלח אליך בפרטי",
                     input_message_content=InputTextMessageContent("⏳ מריץ ושולח פלט בפרטי…")
                 )
-=======
-    logger.debug(f"is_owner: {is_owner}, qhash: {qhash}")
-
-    # קיצורי דרך: להכין הודעה עם /sh או /py עבור הטקסט השלם שהוקלד
-    if q and current_offset == 0:
-        logger.debug(f"Adding shortcut results for query: {q}")
-        results.append(
-            InlineQueryResultArticle(
-                id=f"echo-sh:{qhash}:{current_offset}",
-                title=f"להריץ ב-/sh: {q}",
-                description="מכין הודעת /sh עם הטקסט שחיפשת",
-                input_message_content=InputTextMessageContent(f"/sh {q}")
->>>>>>> origin/main
             )
             results.append(
                 InlineQueryResultArticle(
@@ -471,7 +453,6 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                     input_message_content=InputTextMessageContent("⏳ מריץ ושולח פלט בפרטי…")
                 )
             )
-<<<<<<< HEAD
         else:
             results.append(
                 InlineQueryResultArticle(
@@ -480,11 +461,28 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                     description="רק בעל הבוט יכול להריץ",
                     input_message_content=InputTextMessageContent("❌ אין הרשאה להשתמש בהרצה דרך אינליין")
                 )
-=======
+            )
+
+    # קיצורי דרך להכנת הודעה עם /sh או /py (בדף הראשון)
+    if q and current_offset == 0:
+        results.append(
+            InlineQueryResultArticle(
+                id=f"echo-sh:{qhash}:{current_offset}",
+                title=f"להריץ ב-/sh: {q}",
+                description="מכין הודעת /sh עם הטקסט שחיפשת",
+                input_message_content=InputTextMessageContent(f"/sh {q}")
+            )
+        )
+        results.append(
+            InlineQueryResultArticle(
+                id=f"echo-py:{qhash}:{current_offset}",
+                title="להריץ ב-/py (בלוק קוד)",
+                description="מכין הודעת /py עם הטקסט שלך",
+                input_message_content=InputTextMessageContent(f"/py {q}")
+            )
         )
 
-    # הצעות מתוך רשימת הפקודות המותרות, עם פאגינציה
-    # הערה: מראים פקודות רק אם המשתמש הוא הבעלים
+    # הצעות מתוך רשימת הפקודות המותרות, עם פאגינציה (לבעלים בלבד)
     candidates = []
     if is_owner:
         candidates = sorted(ALLOWED_CMDS)
@@ -492,11 +490,10 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             ql = q.lower()
             candidates = [c for c in candidates if ql in c.lower()]
     else:
-        # למשתמשים אחרים - מראים הודעת עזרה בלבד
         logger.debug(f"User {user_id} is not owner, showing limited results")
 
     logger.debug(f"Found {len(candidates)} candidates for owner: {is_owner}")
-    
+
     total = len(candidates)
     page_slice = candidates[current_offset: current_offset + PAGE_SIZE]
     for idx, cmd in enumerate(page_slice):
@@ -506,17 +503,13 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 title=f"/sh {cmd}",
                 description="לחיצה תכין הודעת /sh עם הפקודה",
                 input_message_content=InputTextMessageContent(f"/sh {cmd}")
->>>>>>> origin/main
             )
+        )
 
-<<<<<<< HEAD
-    if not results:
-=======
     next_offset = str(current_offset + PAGE_SIZE) if (current_offset + PAGE_SIZE) < total else ""
 
     if not results and current_offset == 0:
         logger.debug("No results, adding help message")
->>>>>>> origin/main
         results.append(
             InlineQueryResultArticle(
                 id=f"help:{qhash}",
@@ -525,14 +518,20 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד>")
             )
         )
-    
+
     logger.debug(f"Total results to send: {len(results)}, next_offset: '{next_offset}'")
 
     try:
-<<<<<<< HEAD
+        await update.inline_query.answer(results, cache_time=0, is_personal=True, next_offset=next_offset)
+        logger.debug("Successfully sent inline query answer")
+    except BadRequest as e:
+        logger.warning(f"BadRequest error in inline_query: {e}")
+        # במקרה של בעיית מזהים כפולים/קלט לא תקין, ננסה לענות ללא next_offset
         await update.inline_query.answer(results, cache_time=0, is_personal=True)
-    except BadRequest:
-        await update.inline_query.answer(results, cache_time=0, is_personal=True)
+    except Exception as e:
+        logger.error(f"Unexpected error in inline_query: {e}")
+        # שגיאה לא צפויה - מעבירים הלאה לטיפול כללי
+        raise
 
 async def chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """כאשר המשתמש בוחר תוצאת אינליין, נריץ בפועל ונשלח את הפלט אל הצ'אט הפרטי שלו."""
@@ -647,19 +646,6 @@ async def chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYP
             await send_output_to_chat(context.bot, user_id, f"ERR (inline):\n{e}", "inline-error.txt")
         finally:
             return
-
-=======
-        await update.inline_query.answer(results, cache_time=0, is_personal=True, next_offset=next_offset)
-        logger.debug("Successfully sent inline query answer")
-    except BadRequest as e:
-        logger.warning(f"BadRequest error in inline_query: {e}")
-        # במקרה של בעיית מזהים כפולים/קלט לא תקין, ננסה לענות ללא next_offset
-        await update.inline_query.answer(results, cache_time=0, is_personal=True)
-    except Exception as e:
-        logger.error(f"Unexpected error in inline_query: {e}")
-        # שגיאה לא צפויה - מעבירים הלאה לטיפול כללי
-        raise
->>>>>>> origin/main
 
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     reporter.report_activity(update.effective_user.id if update.effective_user else 0)
@@ -788,23 +774,7 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     cleaned = textwrap.dedent(code)
     cleaned = normalize_code(cleaned).strip("\n") + "\n"
 
-    def _exec_in_context(src: str, chat_id: int):
-        global PY_CONTEXT
-        # אתחול ראשוני של הקשר ההרצה לצ'אט הנוכחי
-        ctx = PY_CONTEXT.get(chat_id)
-        if ctx is None:
-            ctx = {"__builtins__": __builtins__}
-            PY_CONTEXT[chat_id] = ctx
-        stdout_buffer = io.StringIO()
-        stderr_buffer = io.StringIO()
-        tb_text = None
-        try:
-            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                exec(src, ctx, ctx)
-        except Exception:
-            tb_text = traceback.format_exc()
-        return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
-
+    # שימוש בגרסת _exec_in_context הגלובלית
     try:
         chat_id = _chat_id(update)
         out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
