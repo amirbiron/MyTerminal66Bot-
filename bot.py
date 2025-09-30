@@ -17,10 +17,11 @@ import traceback
 import contextlib
 import unicodedata
 import re
+import hashlib
 
 from activity_reporter import create_reporter
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
+from telegram.ext import Application, CommandHandler, ContextTypes, InlineQueryHandler
 from telegram.error import NetworkError, TimedOut, Conflict, BadRequest
 
 # ==== תצורה ====
@@ -301,6 +302,87 @@ async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("/sh <פקודת shell>\n/py <קוד פייתון>\n/health\n/restart\n/env\n/reset\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)")
 
 
+async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """תמיכה במצב אינליין: מציע תוצאות מסוג InlineQueryResultArticle.
+    - מסנן מתוך ALLOWED_CMDS לפי הטקסט שהוקלד
+    - מחזיר פאגינציה בעזרת next_offset
+    - מוסיף קיצורי דרך להרצת /sh או /py עם הטקסט המלא
+    """
+    try:
+        user_id = update.inline_query.from_user.id if update.inline_query and update.inline_query.from_user else 0
+    except Exception:
+        user_id = 0
+    reporter.report_activity(user_id)
+
+    q = (update.inline_query.query or "").strip() if update.inline_query else ""
+    offset_text = update.inline_query.offset if update.inline_query else ""
+    try:
+        current_offset = int(offset_text) if offset_text else 0
+    except ValueError:
+        current_offset = 0
+
+    PAGE_SIZE = 10
+    results = []
+    is_owner = allowed(update)
+    qhash = hashlib.sha1(q.encode("utf-8")).hexdigest()[:12] if q else "noq"
+
+    # קיצורי דרך: להכין הודעה עם /sh או /py עבור הטקסט השלם שהוקלד
+    if q and current_offset == 0:
+        results.append(
+            InlineQueryResultArticle(
+                id=f"echo-sh:{qhash}:{current_offset}",
+                title=f"להריץ ב-/sh: {q}",
+                description="מכין הודעת /sh עם הטקסט שחיפשת",
+                input_message_content=InputTextMessageContent(f"/sh {q}")
+            )
+        )
+        results.append(
+            InlineQueryResultArticle(
+                id=f"echo-py:{qhash}:{current_offset}",
+                title="להריץ ב-/py (בלוק קוד)",
+                description="מכין הודעת /py עם הטקסט שלך",
+                input_message_content=InputTextMessageContent(f"/py {q}")
+            )
+        )
+
+    # הצעות מתוך רשימת הפקודות המותרות, עם פאגינציה
+    candidates = []
+    if is_owner:
+        candidates = sorted(ALLOWED_CMDS)
+        if q:
+            ql = q.lower()
+            candidates = [c for c in candidates if ql in c.lower()]
+
+    total = len(candidates)
+    page_slice = candidates[current_offset: current_offset + PAGE_SIZE]
+    for cmd in page_slice:
+        results.append(
+            InlineQueryResultArticle(
+                id=f"cmd:{qhash}:{current_offset}:{cmd}",
+                title=f"/sh {cmd}",
+                description="לחיצה תכין הודעת /sh עם הפקודה",
+                input_message_content=InputTextMessageContent(f"/sh {cmd}")
+            )
+        )
+
+    next_offset = str(current_offset + PAGE_SIZE) if (current_offset + PAGE_SIZE) < total else ""
+
+    if not results and current_offset == 0:
+        results.append(
+            InlineQueryResultArticle(
+                id=f"help:{qhash}:{current_offset}",
+                title="איך משתמשים באינליין?",
+                description="כתבו @שם_הבוט ואז טקסט לחיפוש, למשל 'curl'",
+                input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד>")
+            )
+        )
+
+    try:
+        await update.inline_query.answer(results, cache_time=0, is_personal=True, next_offset=next_offset)
+    except BadRequest:
+        # במקרה של בעיית מזהים כפולים/קלט לא תקין, ננסה לענות ללא next_offset
+        await update.inline_query.answer(results, cache_time=0, is_personal=True)
+
 async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     reporter.report_activity(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
@@ -549,6 +631,7 @@ def main():
     while True:
         app = Application.builder().token(token).post_init(on_post_init).build()
 
+        app.add_handler(InlineQueryHandler(inline_query))
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
