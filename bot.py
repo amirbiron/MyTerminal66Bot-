@@ -169,6 +169,42 @@ def _make_refresh_markup(token: str) -> InlineKeyboardMarkup:
     ])
 
 
+def _split_to_chunks_by_lines(text: str, max_len: int) -> list[str]:
+    """מפצל טקסט לפי שורות כדי לא לחרוג מהמגבלה. דואג שלפחות חתיכה אחת תוחזר."""
+    text = text or ""
+    if max_len <= 0:
+        return [text]
+    lines = text.splitlines()
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for ln in lines:
+        add_len = len(ln) + (1 if current else 0)
+        if current_len + add_len > max_len and current:
+            chunks.append("\n".join(current))
+            current = [ln]
+            current_len = len(ln)
+        else:
+            current.append(ln)
+            current_len += add_len
+    if current or not chunks:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+def _make_before_run_markup(token: str, total_pages: int, page_idx: int) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    nav_row: list[InlineKeyboardButton] = []
+    if page_idx > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ הקודם", callback_data=f"page:{token}:{page_idx-1}"))
+    if page_idx + 1 < total_pages:
+        nav_row.append(InlineKeyboardButton("הבא ➡️", callback_data=f"page:{token}:{page_idx+1}"))
+    if nav_row:
+        buttons.append(nav_row)
+    buttons.append([InlineKeyboardButton("🔄 רענון", callback_data=f"refresh:{token}")])
+    return InlineKeyboardMarkup(buttons)
+
+
 def prune_inline_exec_store(now_ts: float | None = None) -> tuple[int, int]:
     """מסיר רשומות פגות תוקף, ומגביל גודל מקסימלי ע"פ זמן ישן ביותר.
     מחזיר (expired_removed, trimmed_removed).
@@ -458,14 +494,17 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             "q": q,
             "user_id": user_id,
             "ts": time.time(),
+            "page": 0,
         }
+        # פיצול הקלט לעמודים לפני הרצה
+        sh_pages = _split_to_chunks_by_lines(f"$ {q}", INLINE_PREVIEW_MAX)
         results.append(
             InlineQueryResultArticle(
                 id=f"run:{token}:sh:{current_offset}",
                 title=f"להריץ ב-/sh: {q}",
-                description="יופיע \"מריץ…\" ואז לחיצה על הכפתור תריץ",
-                input_message_content=InputTextMessageContent(f"⏳ מריץ…\n\n$ {q}\n\n(לחץ 🔄 להרצה)"),
-                reply_markup=_make_refresh_markup(token),
+                description="עיון בקוד בעמודים ואז הרצה",
+                input_message_content=InputTextMessageContent(f"⏳ מריץ…\n\n{sh_pages[0]}"),
+                reply_markup=_make_before_run_markup(token, len(sh_pages), 0),
             )
         )
         token_py = secrets.token_urlsafe(8)
@@ -474,14 +513,16 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             "q": q,
             "user_id": user_id,
             "ts": time.time(),
+            "page": 0,
         }
+        py_pages = _split_to_chunks_by_lines(f"/py:\n{q}", INLINE_PREVIEW_MAX)
         results.append(
             InlineQueryResultArticle(
                 id=f"run:{token_py}:py:{current_offset}",
                 title="להריץ ב-/py (בלוק קוד)",
-                description="יופיע \"מריץ…\" ואז לחיצה על הכפתור תריץ",
-                input_message_content=InputTextMessageContent(f"⏳ מריץ…\n\n/py:\n{q}\n\n(לחץ 🔄 להרצה)"),
-                reply_markup=_make_refresh_markup(token_py),
+                description="עיון בקוד בעמודים ואז הרצה",
+                input_message_content=InputTextMessageContent(f"⏳ מריץ…\n\n{py_pages[0]}"),
+                reply_markup=_make_before_run_markup(token_py, len(py_pages), 0),
             )
         )
 
@@ -719,8 +760,32 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not query:
         return
     data = query.data or ""
-    if not data.startswith("refresh:"):
+    if not (data.startswith("refresh:") or data.startswith("page:")):
         return
+    # דפדוף עמודים לפני הרצה
+    if data.startswith("page:"):
+        try:
+            _, token, page_str = data.split(":", 2)
+            page_idx = int(page_str)
+        except Exception:
+            return
+        rec = INLINE_EXEC_STORE.get(token)
+        if not rec:
+            return
+        if query.from_user and rec.get("user_id") != query.from_user.id:
+            return
+        q = str(rec.get("q", ""))
+        run_type = rec.get("type")
+        pages = _split_to_chunks_by_lines((f"$ {q}" if run_type == "sh" else f"/py:\n{q}"), INLINE_PREVIEW_MAX)
+        page_idx = max(0, min(page_idx, max(0, len(pages) - 1)))
+        rec["page"] = page_idx
+        try:
+            await query.edit_message_text(text=f"⏳ מריץ…\n\n{pages[page_idx]}", reply_markup=_make_before_run_markup(token, len(pages), page_idx))
+            await query.answer()
+        except Exception:
+            pass
+        return
+
     token = data.split(":", 1)[1]
     rec = INLINE_EXEC_STORE.get(token)
     if not rec:
