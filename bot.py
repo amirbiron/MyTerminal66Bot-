@@ -384,8 +384,8 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             InlineQueryResultArticle(
                 id=f"run:{token}:sh:{current_offset}",
                 title=f"להריץ ב-/sh: {q}",
-                description="מכין הודעת /sh עם הטקסט שחיפשת",
-                input_message_content=InputTextMessageContent(f"/sh {q}")
+                description="יבוצע ויוחלף בפלט בצ'אט",
+                input_message_content=InputTextMessageContent("⏳ מריץ…")
             )
         )
         token_py = secrets.token_urlsafe(8)
@@ -399,8 +399,8 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
             InlineQueryResultArticle(
                 id=f"run:{token_py}:py:{current_offset}",
                 title="להריץ ב-/py (בלוק קוד)",
-                description="מכין הודעת /py עם הטקסט שלך",
-                input_message_content=InputTextMessageContent(f"/py {q}")
+                description="יבוצע ויוחלף בפלט בצ'אט",
+                input_message_content=InputTextMessageContent("⏳ מריץ…")
             )
         )
 
@@ -446,6 +446,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
     """כאשר המשתמש בוחר תוצאת אינליין, נזהה אם זו תוצאת 'run:' שלנו ונריץ בפועל.
     נחזיר טקסט קצר כי לא ניתן לערוך את ההודעה שנשלחה כבר; במקום זה נשלח למשתמש הודעה אישית.
     """
+    token = None
     try:
         chosen = update.chosen_inline_result
         if not chosen:
@@ -534,16 +535,28 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
         text_out = _trim_for_message(text_out)
 
-        # שליחת הודעה פרטית למשתמש הבוחר (לא ניתן לחייב שזו תהיה באותו צ'אט שבו שולב האינליין)
-        # ננסה לשלוח באמצעות bot.send_message עם user_id
-        try:
-            await _.bot.send_message(chat_id=user_id, text=text_out)
-        except Exception:
-            pass
+        # אם יש inline_message_id – נערוך את הודעת האינליין בצ'אט היעד
+        inline_msg_id = getattr(chosen, "inline_message_id", None)
+        if inline_msg_id:
+            try:
+                await _.bot.edit_message_text(inline_message_id=inline_msg_id, text=text_out)
+            except Exception:
+                # נפילה חכמה: שליחת הודעה פרטית לבעלים
+                try:
+                    await _.bot.send_message(chat_id=user_id, text=text_out)
+                except Exception:
+                    pass
+        else:
+            # אין מזהה הודעת אינליין – שליחה פרטית לבעלים
+            try:
+                await _.bot.send_message(chat_id=user_id, text=text_out)
+            except Exception:
+                pass
     finally:
         # מחיקה רכה של הטוקן
         try:
-            INLINE_EXEC_STORE.pop(token, None)
+            if token:
+                INLINE_EXEC_STORE.pop(token, None)
         except Exception:
             pass
 
