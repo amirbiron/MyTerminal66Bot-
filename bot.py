@@ -579,12 +579,19 @@ async def chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYP
                     return
 
             shell_exec = SHELL_EXECUTABLE or "/bin/bash"
+            # נשתמש בסשן לפי הצ'אט הפרטי (user_id) כדי לשמור cwd/env
+            sess = sessions.get(user_id)
+            if not sess:
+                sess = {"cwd": os.getcwd(), "env": dict(os.environ)}
+                sessions[user_id] = sess
             try:
                 p = subprocess.run(
                     [shell_exec, "-c", q],
                     capture_output=True,
                     text=True,
                     timeout=min(TIMEOUT, 8),
+                    cwd=sess["cwd"],
+                    env=sess["env"],
                 )
                 out = p.stdout or ""
                 err = p.stderr or ""
