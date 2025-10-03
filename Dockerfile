@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
+    nodejs \
+    npm \
     libblas-dev \
     liblapack-dev \
     libopenblas-dev \
