@@ -22,7 +22,7 @@ import secrets
 
 from activity_reporter import create_reporter
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, ContextTypes, InlineQueryHandler, CallbackQueryHandler, ChosenInlineResultHandler
+from telegram.ext import Application, CommandHandler, ContextTypes, InlineQueryHandler, CallbackQueryHandler, ChosenInlineResultHandler, MessageHandler, filters
 from telegram.error import NetworkError, TimedOut, Conflict, BadRequest
 
 # ==== תצורה ====
@@ -114,6 +114,10 @@ sessions = {}
 # ==== הקשר גלובלי לסשן פייתון מתמשך (לפי chat_id) ====
 # מיפוי chat_id -> context dict לשמירת מצב פייתון לכל צ'אט בנפרד
 PY_CONTEXT = {}
+
+# ==== איסוף קוד רב-הודעות (/py_start … /py_run) ====
+# מיפוי chat_id -> list[str] של הודעות שנאספו
+PY_COLLECT: dict[int, list[str]] = {}
 
 # ==== הרצה באינליין ====
 INLINE_EXEC_STORE = {}
@@ -494,7 +498,14 @@ async def on_post_init(app: Application) -> None:
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
     report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
-        return await update.message.reply_text("/sh <פקודת shell>\n/py <קוד פייתון>\n/js <קוד JS>\n/health\n/restart\n/env\n/reset\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)")
+        return await update.message.reply_text(
+            "/sh <פקודת shell>\n"
+            "/py <קוד פייתון>\n"
+            "/py_start → התחלת איסוף קוד רב-הודעות\n"
+            "/py_run → הרצת כל ההודעות שנאספו\n"
+            "/js <קוד JS>\n/health\n/restart\n/env\n/reset\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n"
+            "(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)"
+        )
 
 
 async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -1262,6 +1273,108 @@ async def js_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await send_output(update, cleaned.rstrip() + f"\n\nERR:\n{e}", "js-output.txt")
 
+
+async def py_start_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """מתחיל איסוף קוד רב-הודעות עבור הצ'אט הנוכחי."""
+    report_nowait(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return
+    chat_id = _chat_id(update)
+    PY_COLLECT[chat_id] = []
+    await update.message.reply_text("🧰 מתחיל איסוף קוד. שלחו הודעות טקסט. סיום עם /py_run")
+
+
+async def py_run_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """מאחד את כל ההודעות שנאספו ומריץ אותן כבלוק פייתון אחד."""
+    report_nowait(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return
+    chat_id = _chat_id(update)
+    parts = PY_COLLECT.get(chat_id)
+    if not parts:
+        return await update.message.reply_text("❗ אין מה להריץ. השתמשו ב-/py_start ואז שלחו הודעות.")
+
+    # איחוד + ניקוי
+    code_joined = "\n".join(parts)
+    cleaned = textwrap.dedent(code_joined)
+    cleaned = normalize_code(cleaned).strip("\n") + "\n"
+
+    def _exec_in_context(src: str, chat: int):
+        global PY_CONTEXT
+        ctx = PY_CONTEXT.get(chat)
+        if ctx is None:
+            ctx = {"__builtins__": __builtins__}
+            PY_CONTEXT[chat] = ctx
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        tb_text = None
+        try:
+            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+                exec(src, ctx, ctx)
+        except Exception:
+            tb_text = traceback.format_exc()
+        return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
+
+    try:
+        out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
+
+        # התקנה דינמית עבור ModuleNotFoundError (עד 3 ניסיונות)
+        attempts = 0
+        while tb_text and "ModuleNotFoundError" in tb_text and attempts < 3:
+            m = re.search(r"ModuleNotFoundError: No module named '([^']+)'", tb_text)
+            if not m:
+                break
+            missing_mod = m.group(1)
+            if not SAFE_PIP_NAME_RE.match(missing_mod):
+                await update.message.reply_text(f"❌ שם מודול לא תקין להתקנה: '{missing_mod}'")
+                break
+            try:
+                await update.message.reply_text(f"📦 מתקין את '{missing_mod}' (pip)…")
+                await asyncio.wait_for(asyncio.to_thread(install_package, missing_mod), timeout=PIP_TIMEOUT)
+                await update.message.reply_text(f"✅ '{missing_mod}' הותקן. מריץ שוב…")
+            except asyncio.TimeoutError:
+                await update.message.reply_text(f"⏱️ Timeout בהתקנת '{missing_mod}' לאחר {PIP_TIMEOUT}s")
+                break
+            except subprocess.CalledProcessError as e:
+                await update.message.reply_text(f"❌ כשל בהתקנת '{missing_mod}' (קוד {e.returncode})")
+                break
+            attempts += 1
+            out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
+
+        resp_parts = []
+        if out.strip():
+            resp_parts.append(out.rstrip())
+        if err.strip():
+            resp_parts.append("STDERR:\n" + err.rstrip())
+        if tb_text and tb_text.strip():
+            resp_parts.append(tb_text.rstrip())
+        resp = "\n".join(resp_parts).strip() or "(no output)"
+        await send_output(update, truncate(resp), "py-output.txt")
+    except asyncio.TimeoutError:
+        await send_output(update, "⏱️ Timeout", "py-output.txt")
+    except Exception as e:
+        await send_output(update, f"ERR:\n{e}", "py-output.txt")
+    finally:
+        # איפוס המאגר לאחר הרצה
+        PY_COLLECT.pop(chat_id, None)
+
+
+async def collect_text_handler(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """אוסף הודעות טקסט לצורך /py_start → /py_run, ללא פקודות."""
+    if not update or not update.message or not update.message.text:
+        return
+    if not allowed(update):
+        return
+    chat_id = _chat_id(update)
+    if chat_id not in PY_COLLECT:
+        return
+    text = update.message.text
+    # לא לאסוף הודעות שהן בעצם פקודות (גיבוי נוסף מעבר ל-filter)
+    if text.strip().startswith("/"):
+        return
+    PY_COLLECT[chat_id].append(text)
+    await update.message.reply_text(f"✅ נוספה. סה\"כ {len(PY_COLLECT[chat_id])} הודעות בקוד.")
+
 async def env_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
@@ -1354,6 +1467,11 @@ def main():
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
         app.add_handler(CommandHandler("js", js_cmd))
+        # איסוף קוד רב-הודעות
+        app.add_handler(CommandHandler("py_start", py_start_cmd))
+        app.add_handler(CommandHandler("py_run", py_run_cmd))
+        # איסוף הודעות טקסט רגילות בין /py_start ל-/py_run
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, collect_text_handler))
         app.add_handler(CommandHandler("env", env_cmd))
         app.add_handler(CommandHandler("reset", reset_cmd))
         app.add_handler(CommandHandler("health", health_cmd))
