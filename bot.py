@@ -183,6 +183,28 @@ def _run_shell_blocking(shell_exec: str, q: str, cwd: str, env: dict, timeout_se
     )
 
 
+def _run_js_blocking(src: str, cwd: str, env: dict, timeout_sec: int):
+    """מריץ קוד JS באמצעות node על קובץ זמני (להרצה בתוך ת׳רד)."""
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".js", encoding="utf-8") as tf:
+            tf.write(src)
+            tmp_path = tf.name
+        return subprocess.run(
+            ["node", tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            cwd=cwd,
+            env=env,
+        )
+    finally:
+        try:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
 
 def _make_refresh_markup(token: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -472,7 +494,7 @@ async def on_post_init(app: Application) -> None:
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
     report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
-        return await update.message.reply_text("/sh <פקודת shell>\n/py <קוד פייתון>\n/health\n/restart\n/env\n/reset\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)")
+        return await update.message.reply_text("/sh <פקודת shell>\n/py <קוד פייתון>\n/js <קוד JS>\n/health\n/restart\n/env\n/reset\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)")
 
 
 async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -535,6 +557,17 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 reply_markup=_make_refresh_markup(token_py),
             )
         )
+        token_js = secrets.token_urlsafe(8)
+        INLINE_EXEC_STORE[token_js] = {"type": "js", "q": q, "user_id": user_id, "ts": time.time()}
+        results.append(
+            InlineQueryResultArticle(
+                id=f"run:{token_js}:js:{current_offset}",
+                title=_shorten("להריץ ב-/js (בלוק JS)", 64),
+                description=_shorten("יופיע 'מריץ…' ואז לחיצה על הכפתור תריץ", 120),
+                input_message_content=InputTextMessageContent("⏳ מריץ…"),
+                reply_markup=_make_refresh_markup(token_js),
+            )
+        )
 
     # הצעות מתוך רשימת הפקודות המותרות, עם פאגינציה
     candidates = []
@@ -564,7 +597,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 id=f"help:{qhash}:{current_offset}",
                 title="איך משתמשים באינליין?",
                 description="כתבו @שם_הבוט ואז טקסט לחיפוש, למשל 'curl'",
-                input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד>")
+                input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד> או /js <קוד JS>")
             )
         )
 
@@ -576,7 +609,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 id=f"fallback:{qhash}:{current_offset}",
                 title="אין תוצאות (לחץ ל-/help)",
                 description="לחיצה תשלח עזרה",
-                input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד>")
+                input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד> או /js <קוד JS>")
             )
         )
         num_results = 1
@@ -731,6 +764,26 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 text_out = cleaned.rstrip() + "\n\n⏱️ Timeout"
             except Exception as e:
                 text_out = cleaned.rstrip() + f"\n\nERR:\n{e}"
+        elif run_type == "js":
+            cleaned = textwrap.dedent(q)
+            cleaned = normalize_code(cleaned).strip("\n") + "\n"
+            try:
+                sess = _get_inline_session(str(user_id))
+                p = await asyncio.to_thread(_run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+                out = (p.stdout or "").rstrip()
+                err = (p.stderr or "").rstrip()
+                parts_out = [cleaned.rstrip() + "\n\n"]
+                if out:
+                    parts_out.append(out)
+                if err:
+                    parts_out.append("STDERR:\n" + err)
+                text_out = "\n".join(parts_out).strip() or "(no output)"
+            except subprocess.TimeoutExpired:
+                text_out = cleaned.rstrip() + "\n\n⏱️ Timeout"
+            except FileNotFoundError:
+                text_out = cleaned.rstrip() + "\n\n❌ node לא נמצא במערכת"
+            except Exception as e:
+                text_out = cleaned.rstrip() + f"\n\nERR:\n{e}"
         else:
             return
 
@@ -812,7 +865,15 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         q = str(rec.get("q", ""))
         try:
             bio = io.BytesIO(q.encode("utf-8"))
-            bio.name = "inline-code.py"
+            rtype = rec.get("type")
+            if rtype == "py":
+                bio.name = "inline-code.py"
+            elif rtype == "js":
+                bio.name = "inline-code.js"
+            elif rtype == "sh":
+                bio.name = "inline-code.sh"
+            else:
+                bio.name = "inline-code.txt"
             # ננסה לשלוח בפרטי. אם אין צ'אט פרטי פתוח, נבקש מהמשתמש להתחיל שיחה עם הבוט
             try:
                 await _.bot.send_document(chat_id=query.from_user.id, document=bio, caption="(full code)")
@@ -923,6 +984,26 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
             text_out = cleaned.rstrip() + "\n\n⏱️ Timeout"
         except Exception as e:
             text_out = cleaned.rstrip() + f"\n\nERR:\n{e}"
+    elif run_type == "js":
+        cleaned = textwrap.dedent(q)
+        cleaned = normalize_code(cleaned).strip("\n") + "\n"
+        try:
+            sess = _get_inline_session(str(user_id))
+            p = await asyncio.to_thread(_run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+            out = (p.stdout or "").rstrip()
+            err = (p.stderr or "").rstrip()
+            parts_out = [cleaned.rstrip() + "\n\n"]
+            if out:
+                parts_out.append(out)
+            if err:
+                parts_out.append("STDERR:\n" + err)
+            text_out = "\n".join(parts_out).strip() or "(no output)"
+        except subprocess.TimeoutExpired:
+            text_out = cleaned.rstrip() + "\n\n⏱️ Timeout"
+        except FileNotFoundError:
+            text_out = cleaned.rstrip() + "\n\n❌ node לא נמצא במערכת"
+        except Exception as e:
+            text_out = cleaned.rstrip() + f"\n\nERR:\n{e}"
     else:
         try:
             await query.answer(text="⛔ סוג לא נתמך", show_alert=False)
@@ -970,7 +1051,7 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     cmdline = update.message.text.partition(" ")[2].strip()
     cmdline = normalize_code(cmdline)
     if not cmdline:
-        return await update.message.reply_text("שימוש: /sh <פקודה>")
+        return await update.message.reply_text("שימוש: /sh <פקודה> | /py <קוד> | /js <קוד JS>")
 
     sess = get_session(update)
 
@@ -1148,6 +1229,39 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
         await send_output(update, f"ERR:\n{e}", "py-output.txt")
 
 
+async def js_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    report_nowait(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return
+
+    code = update.message.text.partition(" ")[2]
+    if not code.strip():
+        return await update.message.reply_text("שימוש: /js <קוד JS>")
+
+    # ניקוי ופירמוט קוד
+    cleaned = textwrap.dedent(code)
+    cleaned = normalize_code(cleaned).strip("\n") + "\n"
+
+    sess = get_session(update)
+
+    try:
+        p = await asyncio.to_thread(_run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+        out = (p.stdout or "").rstrip()
+        err = (p.stderr or "").rstrip()
+        parts = [cleaned.rstrip() + "\n\n"]
+        if out:
+            parts.append(out)
+        if err:
+            parts.append("STDERR:\n" + err)
+        resp = "\n".join(parts).strip() or "(no output)"
+        await send_output(update, truncate(resp), "js-output.txt")
+    except subprocess.TimeoutExpired:
+        await send_output(update, cleaned.rstrip() + "\n\n⏱️ Timeout", "js-output.txt")
+    except FileNotFoundError:
+        await send_output(update, cleaned.rstrip() + "\n\n❌ node לא נמצא במערכת", "js-output.txt")
+    except Exception as e:
+        await send_output(update, cleaned.rstrip() + f"\n\nERR:\n{e}", "js-output.txt")
+
 async def env_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
@@ -1239,6 +1353,7 @@ def main():
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
+        app.add_handler(CommandHandler("js", js_cmd))
         app.add_handler(CommandHandler("env", env_cmd))
         app.add_handler(CommandHandler("reset", reset_cmd))
         app.add_handler(CommandHandler("health", health_cmd))
