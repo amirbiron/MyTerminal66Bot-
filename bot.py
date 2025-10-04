@@ -330,6 +330,12 @@ def normalize_code(text: str) -> str:
     text = text.replace("\u00AD", "")
     # CRLF ל-LF
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # הסרת גדרות קוד מרקדאון ```lang ... ```
+    try:
+        text = re.sub(r"(?m)^\s*```[a-zA-Z0-9_+\-]*\s*$", "", text)
+        text = re.sub(r"(?m)^\s*```\s*$", "", text)
+    except Exception:
+        pass
     return text
 
 
@@ -1548,10 +1554,11 @@ def main():
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
         app.add_handler(CommandHandler("js", js_cmd))
-        # הפקודות שביקשת
-        app.add_handler(CommandHandler("rocket", rocket))
-        app.add_handler(CommandHandler("hearts", hearts))
-        app.add_handler(CommandHandler("tasks", tasks))
+        # פקודות דוגמה (ניתנות להסרה בקלות)
+        if os.getenv("ENABLE_EXAMPLE_CMDS", "1") not in ("0", "false", "no", "off"):
+            app.add_handler(CommandHandler("rocket", rocket))
+            app.add_handler(CommandHandler("hearts", hearts))
+            app.add_handler(CommandHandler("tasks", tasks))
         # איסוף קוד רב-הודעות
         app.add_handler(CommandHandler("py_start", py_start_cmd))
         app.add_handler(CommandHandler("py_run", py_run_cmd))
