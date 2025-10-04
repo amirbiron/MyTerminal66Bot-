@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     nodejs \
     npm \
+    default-jdk \
     libblas-dev \
     liblapack-dev \
     libopenblas-dev \
