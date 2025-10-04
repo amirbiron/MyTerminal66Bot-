@@ -20,6 +20,7 @@ import re
 import hashlib
 import secrets
 import random
+import ast
 
 from activity_reporter import create_reporter
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
@@ -158,7 +159,10 @@ def exec_python_in_shared_context(src: str, context_key: int):
     global PY_CONTEXT
     ctx = PY_CONTEXT.get(context_key)
     if ctx is None:
-        ctx = {"__builtins__": __builtins__}
+        ctx = {"__builtins__": __builtins__, "__name__": "__main__"}
+    else:
+        # ודא ש-__name__ קיים למען קוד עם if __name__ == "__main__"
+        ctx.setdefault("__name__", "__main__")
         PY_CONTEXT[context_key] = ctx
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
@@ -1267,13 +1271,18 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     cleaned = textwrap.dedent(code)
     cleaned = normalize_code(cleaned).strip("\n") + "\n"
 
-    def _exec_in_context(src: str, chat_id: int):
+    def _exec_in_context(src: str, chat_id: int, _update: Update, _context: ContextTypes.DEFAULT_TYPE):
         global PY_CONTEXT
         # אתחול ראשוני של הקשר ההרצה לצ'אט הנוכחי
         ctx = PY_CONTEXT.get(chat_id)
         if ctx is None:
-            ctx = {"__builtins__": __builtins__}
+            ctx = {"__builtins__": __builtins__, "__name__": "__main__"}
             PY_CONTEXT[chat_id] = ctx
+        else:
+            ctx.setdefault("__name__", "__main__")
+        # חשיפת אובייקטי טלגרם כדי לאפשר שימוש ישיר בקוד
+        ctx["update"] = _update
+        ctx["context"] = _context
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
         tb_text = None
@@ -1286,7 +1295,9 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
     try:
         chat_id = _chat_id(update)
-        out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
+        out, err, tb_text = await asyncio.wait_for(
+            asyncio.to_thread(_exec_in_context, cleaned, chat_id, update, _), timeout=TIMEOUT
+        )
 
         # Attempt dynamic install on ModuleNotFoundError, up to 3 modules per run
         attempts = 0
@@ -1318,7 +1329,28 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
             parts.append("STDERR:\n" + err.rstrip())
         if tb_text and tb_text.strip():
             parts.append(tb_text.rstrip())
-        resp = "\n".join(parts).strip() or "(no output)"
+
+        resp = "\n".join(parts).strip()
+
+        # אם אין פלט – ננסה להעריך את הביטוי האחרון (כמו REPL)
+        if not resp:
+            try:
+                mod = ast.parse(cleaned, mode="exec")
+                if getattr(mod, "body", None):
+                    last = mod.body[-1]
+                    if isinstance(last, ast.Expr):
+                        expr_code = compile(ast.Expression(last.value), filename="<py>", mode="eval")
+                        ctx = PY_CONTEXT.get(chat_id) or {}
+                        result = eval(expr_code, ctx, ctx)
+                        if inspect.isawaitable(result):
+                            result = await result
+                        if result is not None:
+                            resp = str(result)
+            except Exception:
+                # אם נכשל – נשאיר resp ריק
+                pass
+
+        resp = resp or "(no output)"
         await send_output(update, truncate(resp), "py-output.txt")
     except asyncio.TimeoutError:
         await send_output(update, "⏱️ Timeout", "py-output.txt")
