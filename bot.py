@@ -20,6 +20,7 @@ import re
 import hashlib
 import secrets
 import random
+import inspect
 import ast
 
 from activity_reporter import create_reporter
@@ -1392,6 +1393,99 @@ async def js_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
         await send_output(update, cleaned.rstrip() + f"\n\nERR:\n{e}", "js-output.txt")
 
 
+async def call_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """קורא לפונקציה בשם נתון מתוך הקשר /py של הצ'אט.
+    שימוש: /call func_name [args...]
+    - מזהה אוטומטית פונקציות sync/async
+    - אם החתימה כוללת פרמטר בשם 'update' – נעביר את אובייקט ה-Update
+      ואם כוללת 'context' או 'ctx' – נעביר את אובייקט ה-Context
+    - יתר הארגומנטים יועברו כמחרוזות/מספרים (ניסיון המרה ל-int/float)
+    """
+    report_nowait(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return
+
+    cmdline = (update.message.text or "").partition(" ")[2].strip()
+    if not cmdline:
+        return await update.message.reply_text("שימוש: /call <שם_פונקציה> [ארגומנטים]")
+
+    try:
+        tokens = shlex.split(cmdline, posix=True)
+    except ValueError:
+        return await update.message.reply_text("❗ שגיאת פרסינג בארגומנטים")
+    if not tokens:
+        return await update.message.reply_text("❗ לא צוין שם פונקציה")
+
+    func_name = tokens[0]
+    raw_args = tokens[1:]
+
+    chat_id = _chat_id(update)
+    ctx = PY_CONTEXT.get(chat_id)
+    if ctx is None or func_name not in ctx:
+        return await update.message.reply_text(f"❗ הפונקציה '{func_name}' לא נמצאה בהקשר הנוכחי. הגדר אותה קודם עם /py.")
+
+    func = ctx.get(func_name)
+    if not callable(func):
+        return await update.message.reply_text(f"❗ '{func_name}' אינה פונקציה")
+
+    sig = None
+    try:
+        sig = inspect.signature(func)
+    except Exception:
+        sig = None
+
+    # בניית ארגומנטים
+    def _parse_arg(tok: str):
+        try:
+            if tok.lower() in ("true", "false"):
+                return tok.lower() == "true"
+            if tok.startswith("0x"):
+                return int(tok, 16)
+            if tok.isdigit() or (tok.startswith("-") and tok[1:].isdigit()):
+                return int(tok)
+            f = float(tok)
+            return f
+        except Exception:
+            return tok
+
+    pos_args = [_parse_arg(a) for a in raw_args]
+    kw_args = {}
+
+    if sig is not None:
+        param_names = list(sig.parameters.keys())
+        # הזרקת update/context לפי שם פרמטר
+        if "update" in param_names:
+            kw_args["update"] = update
+        for cand in ("context", "ctx"):
+            if cand in param_names:
+                kw_args[cand] = _
+                break
+
+    buf = io.StringIO()
+
+    async def _run_call():
+        with contextlib.redirect_stdout(buf):
+            value = func(*pos_args, **kw_args)
+            if inspect.isawaitable(value):
+                value = await value
+            return value
+
+    try:
+        result = await asyncio.wait_for(_run_call(), timeout=TIMEOUT)
+    except asyncio.TimeoutError:
+        return await send_output(update, "⏱️ Timeout", "call-output.txt")
+    except Exception as e:
+        return await send_output(update, f"ERR:\n{e}", "call-output.txt")
+
+    out_text = buf.getvalue().strip()
+    parts = []
+    if out_text:
+        parts.append(out_text)
+    if result is not None and str(result).strip():
+        parts.append(str(result))
+    resp = "\n".join(parts).strip() or "✓ בוצע"
+    await send_output(update, truncate(resp), "call-output.txt")
+
 async def py_start_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     """מתחיל איסוף קוד רב-הודעות עבור הצ'אט הנוכחי."""
     report_nowait(update.effective_user.id if update.effective_user else 0)
@@ -1586,11 +1680,8 @@ def main():
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
         app.add_handler(CommandHandler("js", js_cmd))
-        # פקודות דוגמה (ניתנות להסרה בקלות)
-        if os.getenv("ENABLE_EXAMPLE_CMDS", "1") not in ("0", "false", "no", "off"):
-            app.add_handler(CommandHandler("rocket", rocket))
-            app.add_handler(CommandHandler("hearts", hearts))
-            app.add_handler(CommandHandler("tasks", tasks))
+        # פקודות כלליות בלבד; אין תלות בדוגמאות ספציפיות
+        app.add_handler(CommandHandler("call", call_cmd))
         # איסוף קוד רב-הודעות
         app.add_handler(CommandHandler("py_start", py_start_cmd))
         app.add_handler(CommandHandler("py_run", py_run_cmd))
