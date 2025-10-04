@@ -216,6 +216,62 @@ def _run_js_blocking(src: str, cwd: str, env: dict, timeout_sec: int):
             pass
 
 
+def _run_java_blocking(src: str, cwd: str, env: dict, timeout_sec: int):
+    """מריץ קוד Java באמצעות javac+java על קובץ זמני (להרצה בתוך ת׳רד).
+    מחפש class ציבורי בקוד כדי לקבוע את שם הקובץ, או משתמש ב-Main כברירת מחדל.
+    """
+    tmp_dir = None
+    try:
+        # יצירת תיקייה זמנית לקומפילציה
+        tmp_dir = tempfile.mkdtemp()
+        
+        # חיפוש class ציבורי כדי לקבוע שם קובץ
+        class_name = "Main"
+        try:
+            match = re.search(r'public\s+class\s+(\w+)', src)
+            if match:
+                class_name = match.group(1)
+        except Exception:
+            pass
+        
+        # כתיבת הקוד לקובץ
+        java_file = os.path.join(tmp_dir, f"{class_name}.java")
+        with open(java_file, "w", encoding="utf-8") as f:
+            f.write(src)
+        
+        # קומפילציה
+        compile_proc = subprocess.run(
+            ["javac", java_file],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            cwd=tmp_dir,
+            env=env,
+        )
+        
+        if compile_proc.returncode != 0:
+            # אם הקומפילציה נכשלה, נחזיר את תהליך הקומפילציה
+            return compile_proc
+        
+        # הרצה
+        return subprocess.run(
+            ["java", class_name],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            cwd=tmp_dir,
+            env=env,
+        )
+    finally:
+        # ניקוי הקבצים הזמניים
+        try:
+            if tmp_dir and os.path.exists(tmp_dir):
+                import shutil
+                shutil.rmtree(tmp_dir)
+        except Exception:
+            pass
+
+
 def _make_refresh_markup(token: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 רענון", callback_data=f"refresh:{token}")]
@@ -594,7 +650,9 @@ async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
             "/py <קוד פייתון>\n"
             "/py_start → התחלת איסוף קוד רב-הודעות\n"
             "/py_run → הרצת כל ההודעות שנאספו\n"
-            "/js <קוד JS>\n/health\n/restart\n/env\n/reset\n/clear\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n"
+            "/js <קוד JS>\n"
+            "/java <קוד Java>\n"
+            "/health\n/restart\n/env\n/reset\n/clear\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n"
             "(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)"
         )
 
@@ -670,6 +728,17 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 reply_markup=_make_refresh_markup(token_js),
             )
         )
+        token_java = secrets.token_urlsafe(8)
+        INLINE_EXEC_STORE[token_java] = {"type": "java", "q": q, "user_id": user_id, "ts": time.time()}
+        results.append(
+            InlineQueryResultArticle(
+                id=f"run:{token_java}:java:{current_offset}",
+                title=_shorten("להריץ ב-/java (בלוק Java)", 64),
+                description=_shorten("יופיע 'מריץ…' ואז לחיצה על הכפתור תריץ", 120),
+                input_message_content=InputTextMessageContent("⏳ מריץ…"),
+                reply_markup=_make_refresh_markup(token_java),
+            )
+        )
 
     # הצעות מתוך רשימת הפקודות המותרות, עם פאגינציה
     candidates = []
@@ -699,7 +768,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 id=f"help:{qhash}:{current_offset}",
                 title="איך משתמשים באינליין?",
                 description="כתבו @שם_הבוט ואז טקסט לחיפוש, למשל 'curl'",
-                input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד> או /js <קוד JS>")
+                input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד> או /js <קוד JS> או /java <קוד Java>")
             )
         )
 
@@ -711,7 +780,7 @@ async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 id=f"fallback:{qhash}:{current_offset}",
                 title="אין תוצאות (לחץ ל-/help)",
                 description="לחיצה תשלח עזרה",
-                input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד> או /js <קוד JS>")
+                input_message_content=InputTextMessageContent("כדי להריץ פקודות: כתבו /sh <פקודה> או /py <קוד> או /js <קוד JS> או /java <קוד Java>")
             )
         )
         num_results = 1
@@ -886,6 +955,26 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 text_out = cleaned.rstrip() + "\n\n❌ node לא נמצא במערכת"
             except Exception as e:
                 text_out = cleaned.rstrip() + f"\n\nERR:\n{e}"
+        elif run_type == "java":
+            cleaned = textwrap.dedent(q)
+            cleaned = normalize_code(cleaned).strip("\n") + "\n"
+            try:
+                sess = _get_inline_session(str(user_id))
+                p = await asyncio.to_thread(_run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+                out = (p.stdout or "").rstrip()
+                err = (p.stderr or "").rstrip()
+                parts_out = [cleaned.rstrip() + "\n\n"]
+                if out:
+                    parts_out.append(out)
+                if err:
+                    parts_out.append("STDERR:\n" + err)
+                text_out = "\n".join(parts_out).strip() or "(no output)"
+            except subprocess.TimeoutExpired:
+                text_out = cleaned.rstrip() + "\n\n⏱️ Timeout"
+            except FileNotFoundError:
+                text_out = cleaned.rstrip() + "\n\n❌ javac/java לא נמצאו במערכת"
+            except Exception as e:
+                text_out = cleaned.rstrip() + f"\n\nERR:\n{e}"
         else:
             return
 
@@ -972,6 +1061,8 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 bio.name = "inline-code.py"
             elif rtype == "js":
                 bio.name = "inline-code.js"
+            elif rtype == "java":
+                bio.name = "inline-code.java"
             elif rtype == "sh":
                 bio.name = "inline-code.sh"
             else:
@@ -1106,6 +1197,26 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
             text_out = cleaned.rstrip() + "\n\n❌ node לא נמצא במערכת"
         except Exception as e:
             text_out = cleaned.rstrip() + f"\n\nERR:\n{e}"
+    elif run_type == "java":
+        cleaned = textwrap.dedent(q)
+        cleaned = normalize_code(cleaned).strip("\n") + "\n"
+        try:
+            sess = _get_inline_session(str(user_id))
+            p = await asyncio.to_thread(_run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+            out = (p.stdout or "").rstrip()
+            err = (p.stderr or "").rstrip()
+            parts_out = [cleaned.rstrip() + "\n\n"]
+            if out:
+                parts_out.append(out)
+            if err:
+                parts_out.append("STDERR:\n" + err)
+            text_out = "\n".join(parts_out).strip() or "(no output)"
+        except subprocess.TimeoutExpired:
+            text_out = cleaned.rstrip() + "\n\n⏱️ Timeout"
+        except FileNotFoundError:
+            text_out = cleaned.rstrip() + "\n\n❌ javac/java לא נמצאו במערכת"
+        except Exception as e:
+            text_out = cleaned.rstrip() + f"\n\nERR:\n{e}"
     else:
         try:
             await query.answer(text="⛔ סוג לא נתמך", show_alert=False)
@@ -1153,7 +1264,7 @@ async def sh_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     cmdline = update.message.text.partition(" ")[2].strip()
     cmdline = normalize_code(cmdline)
     if not cmdline:
-        return await update.message.reply_text("שימוש: /sh <פקודה> | /py <קוד> | /js <קוד JS>")
+        return await update.message.reply_text("שימוש: /sh <פקודה> | /py <קוד> | /js <קוד JS> | /java <קוד Java>")
 
     sess = get_session(update)
 
@@ -1394,6 +1505,40 @@ async def js_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
         await send_output(update, cleaned.rstrip() + "\n\n❌ node לא נמצא במערכת", "js-output.txt")
     except Exception as e:
         await send_output(update, cleaned.rstrip() + f"\n\nERR:\n{e}", "js-output.txt")
+
+
+async def java_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    report_nowait(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return
+
+    code = update.message.text.partition(" ")[2]
+    if not code.strip():
+        return await update.message.reply_text("שימוש: /java <קוד Java>")
+
+    # ניקוי ופירמוט קוד
+    cleaned = textwrap.dedent(code)
+    cleaned = normalize_code(cleaned).strip("\n") + "\n"
+
+    sess = get_session(update)
+
+    try:
+        p = await asyncio.to_thread(_run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+        out = (p.stdout or "").rstrip()
+        err = (p.stderr or "").rstrip()
+        parts = [cleaned.rstrip() + "\n\n"]
+        if out:
+            parts.append(out)
+        if err:
+            parts.append("STDERR:\n" + err)
+        resp = "\n".join(parts).strip() or "(no output)"
+        await send_output(update, truncate(resp), "java-output.txt")
+    except subprocess.TimeoutExpired:
+        await send_output(update, cleaned.rstrip() + "\n\n⏱️ Timeout", "java-output.txt")
+    except FileNotFoundError:
+        await send_output(update, cleaned.rstrip() + "\n\n❌ javac/java לא נמצאו במערכת", "java-output.txt")
+    except Exception as e:
+        await send_output(update, cleaned.rstrip() + f"\n\nERR:\n{e}", "java-output.txt")
 
 
 async def call_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -1799,6 +1944,7 @@ def main():
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
         app.add_handler(CommandHandler("js", js_cmd))
+        app.add_handler(CommandHandler("java", java_cmd))
         # פקודות כלליות בלבד; אין תלות בדוגמאות ספציפיות
         app.add_handler(CommandHandler("call", call_cmd))
         # איסוף קוד רב-הודעות
