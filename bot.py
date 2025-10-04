@@ -1454,31 +1454,68 @@ async def call_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     pos_args = [_parse_arg(a) for a in raw_args]
     kw_args = {}
 
+    has_update = False
+    ctx_param_name = None
     if sig is not None:
         param_names = list(sig.parameters.keys())
+        has_update = "update" in param_names
         # הזרקת update/context לפי שם פרמטר
-        if "update" in param_names:
+        if has_update:
             kw_args["update"] = update
         for cand in ("context", "ctx"):
             if cand in param_names:
                 kw_args[cand] = _
+                ctx_param_name = cand
                 break
 
-    buf = io.StringIO()
+    # אם זו פונקציית-בוט (עם update/context), נעדיף להעביר ארגומנטים דרך context.args כטקסטים
+    # כדי לתמוך בקוד בסגנון PTB שמסתמך על context.args
+    if has_update or ctx_param_name is not None:
+        prev_args = getattr(_, "args", None)
+        try:
+            try:
+                _.args = [str(a) for a in raw_args]
+            except Exception:
+                setattr(_, "args", [str(a) for a in raw_args])
+            pos_for_call = []  # בלי ארגומנטים פוזיציוניים כדי לא להתנגש בחתימה
+            buf = io.StringIO()
 
-    async def _run_call():
-        with contextlib.redirect_stdout(buf):
-            value = func(*pos_args, **kw_args)
-            if inspect.isawaitable(value):
-                value = await value
-            return value
+            async def _run_call():
+                with contextlib.redirect_stdout(buf):
+                    value = func(*pos_for_call, **kw_args)
+                    if inspect.isawaitable(value):
+                        value = await value
+                    return value
 
-    try:
-        result = await asyncio.wait_for(_run_call(), timeout=TIMEOUT)
-    except asyncio.TimeoutError:
-        return await send_output(update, "⏱️ Timeout", "call-output.txt")
-    except Exception as e:
-        return await send_output(update, f"ERR:\n{e}", "call-output.txt")
+            try:
+                result = await asyncio.wait_for(_run_call(), timeout=TIMEOUT)
+            finally:
+                # שחזור args לקדמותו
+                try:
+                    _.args = prev_args
+                except Exception:
+                    pass
+        except asyncio.TimeoutError:
+            return await send_output(update, "⏱️ Timeout", "call-output.txt")
+        except Exception as e:
+            return await send_output(update, f"ERR:\n{e}", "call-output.txt")
+    else:
+        # פונקציה רגילה ללא update/context – נעביר ארגומנטים פוזיציוניים מומרי טיפוס
+        buf = io.StringIO()
+
+        async def _run_call():
+            with contextlib.redirect_stdout(buf):
+                value = func(*pos_args)
+                if inspect.isawaitable(value):
+                    value = await value
+                return value
+
+        try:
+            result = await asyncio.wait_for(_run_call(), timeout=TIMEOUT)
+        except asyncio.TimeoutError:
+            return await send_output(update, "⏱️ Timeout", "call-output.txt")
+        except Exception as e:
+            return await send_output(update, f"ERR:\n{e}", "call-output.txt")
 
     out_text = buf.getvalue().strip()
     parts = []
