@@ -226,9 +226,10 @@ def _run_java_blocking(src: str, cwd: str, env: dict, timeout_sec: int):
         tmp_dir = tempfile.mkdtemp()
         
         # חיפוש class ציבורי כדי לקבוע שם קובץ
+        # תומך גם ב-modifiers כמו: public final class, public abstract class וכו'
         class_name = "Main"
         try:
-            match = re.search(r'public\s+class\s+(\w+)', src)
+            match = re.search(r'public\s+(?:final\s+|abstract\s+|static\s+)*class\s+(\w+)', src)
             if match:
                 class_name = match.group(1)
         except Exception:
