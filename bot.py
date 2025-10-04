@@ -1321,7 +1321,10 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ כשל בהתקנת '{missing_mod}' (קוד {e.returncode})")
                 break
             attempts += 1
-            out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
+            out, err, tb_text = await asyncio.wait_for(
+                asyncio.to_thread(_exec_in_context, cleaned, chat_id, update, _),
+                timeout=TIMEOUT,
+            )
 
         parts = []
         if out.strip():
