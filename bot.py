@@ -19,6 +19,7 @@ import unicodedata
 import re
 import hashlib
 import secrets
+import random
 
 from activity_reporter import create_reporter
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
@@ -495,6 +496,85 @@ async def on_post_init(app: Application) -> None:
 
 
 # ==== פקודות ====
+ROCKET_FRAMES = [
+    "   🚀",
+    "   🚀\n   🔥",
+    "   🚀\n  🔥🔥",
+    "   🚀\n 🔥🔥🔥",
+    "   🚀\n🔥🔥🔥🔥",
+]
+
+HEARTS = [
+    "❤️",
+    "🧡",
+    "💛",
+    "💚",
+    "💙",
+    "💜",
+    "🤍",
+    "🤎",
+    "🖤",
+    "💖",
+    "💗",
+    "💘",
+    "💝",
+]
+
+def _build_hearts_grid(rows: int = 8, cols: int = 12) -> str:
+    rows = max(1, min(rows, 15))
+    cols = max(5, min(cols, 30))
+    return "\n".join("".join(random.choice(HEARTS) for _ in range(cols)) for _ in range(rows))
+
+async def rocket(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if not chat_id:
+        return
+    msg = await _.bot.send_message(chat_id, "🚀")
+    for frame in ROCKET_FRAMES:
+        try:
+            await _.bot.edit_message_text(chat_id=chat_id, message_id=msg.message_id, text=frame)
+            await asyncio.sleep(0.5)
+        except Exception:
+            # ננסה להמשיך גם אם עריכה מסוימת נכשלת
+            pass
+    await _.bot.send_message(chat_id, "🚀💨 טס לחלל!")
+
+async def hearts(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    # פרמטרים אופציונליים: /hearts <rows> <cols>
+    try:
+        parts = (update.message.text or "").strip().split()
+        r = int(parts[1]) if len(parts) >= 2 else 8
+        c = int(parts[2]) if len(parts) >= 3 else 12
+    except Exception:
+        r, c = 8, 12
+    await update.message.reply_text(_build_hearts_grid(r, c))
+
+async def tasks(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """מציג את פלט TaskManager בצ'אט, אם המודול קיים.
+    ניתן להגדיר את שם המודול דרך ENV בשם TASK_MANAGER_MODULE (ברירת מחדל: task_manager).
+    """
+    module_name = os.getenv("TASK_MANAGER_MODULE", "task_manager")
+    try:
+        mod = __import__(module_name, fromlist=["TaskManager"])  # type: ignore[import]
+        TaskManager = getattr(mod, "TaskManager", None)
+        if TaskManager is None:
+            return await update.message.reply_text("❗ לא נמצאה המחלקה TaskManager במודול")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            TaskManager().run()
+        text = buf.getvalue() or "(no output)"
+        # שליחה בחלקים בטוחים לאורך
+        for chunk in _split_to_chunks_by_lines(text, TG_MAX_MESSAGE):
+            if not chunk:
+                continue
+            await update.message.reply_text(chunk[:TG_MAX_MESSAGE])
+    except ModuleNotFoundError:
+        await update.message.reply_text(
+            "❗ מודול TaskManager לא נמצא. הוסף 'task_manager.py' עם המחלקה או קבע TASK_MANAGER_MODULE"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"ERR:\n{e}")
+
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
     report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
@@ -1463,10 +1543,15 @@ def main():
         app.add_handler(InlineQueryHandler(inline_query))
         app.add_handler(ChosenInlineResultHandler(on_chosen_inline_result))
         app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^refresh:"))
+        # קלטים בסיסיים
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
         app.add_handler(CommandHandler("js", js_cmd))
+        # הפקודות שביקשת
+        app.add_handler(CommandHandler("rocket", rocket))
+        app.add_handler(CommandHandler("hearts", hearts))
+        app.add_handler(CommandHandler("tasks", tasks))
         # איסוף קוד רב-הודעות
         app.add_handler(CommandHandler("py_start", py_start_cmd))
         app.add_handler(CommandHandler("py_run", py_run_cmd))
