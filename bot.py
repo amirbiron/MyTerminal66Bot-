@@ -594,7 +594,7 @@ async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
             "/py <קוד פייתון>\n"
             "/py_start → התחלת איסוף קוד רב-הודעות\n"
             "/py_run → הרצת כל ההודעות שנאספו\n"
-            "/js <קוד JS>\n/health\n/restart\n/env\n/reset\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n"
+            "/js <קוד JS>\n/health\n/restart\n/env\n/reset\n/clear\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n"
             "(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)"
         )
 
@@ -1645,6 +1645,85 @@ async def reset_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("♻️ הסשן אופס (cwd/env הוחזרו לברירת מחדל)")
 
 
+async def clear_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """מנקה את כל מצב הסשן לצ'אט הנוכחי, כולל הקשר /py, איסוף /py_start,
+    מצב inline למשתמש, וטוקנים רלוונטיים.
+    """
+    report_nowait(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return
+    chat_id = _chat_id(update)
+    user_id = update.effective_user.id if update.effective_user else 0
+
+    cleared = {
+        "shell_session": False,
+        "py_context": False,
+        "py_collect": False,
+        "inline_session": False,
+        "inline_tokens_removed": 0,
+    }
+
+    try:
+        if chat_id in sessions:
+            sessions.pop(chat_id, None)
+            cleared["shell_session"] = True
+    except Exception:
+        pass
+
+    try:
+        if chat_id in PY_CONTEXT:
+            PY_CONTEXT.pop(chat_id, None)
+            cleared["py_context"] = True
+    except Exception:
+        pass
+
+    try:
+        if chat_id in PY_COLLECT:
+            PY_COLLECT.pop(chat_id, None)
+            cleared["py_collect"] = True
+    except Exception:
+        pass
+
+    try:
+        if user_id:
+            if str(user_id) in INLINE_SESSIONS:
+                INLINE_SESSIONS.pop(str(user_id), None)
+                cleared["inline_session"] = True
+            # ניקוי טוקנים של המשתמש מחנות ה-inline
+            removed = 0
+            for k in list(INLINE_EXEC_STORE.keys()):
+                try:
+                    if INLINE_EXEC_STORE.get(k, {}).get("user_id") == user_id:
+                        INLINE_EXEC_STORE.pop(k, None)
+                        removed += 1
+                except Exception:
+                    pass
+            if removed:
+                cleared["inline_tokens_removed"] = removed
+            prune_inline_exec_store()
+    except Exception:
+        pass
+
+    parts = ["✅ בוצע ניקוי:"]
+    if cleared["shell_session"]:
+        parts.append("- cwd/env לסשן הוחזרו לברירת מחדל")
+    if cleared["py_context"]:
+        parts.append("- הקשר /py לצ'אט אופס")
+    if cleared["py_collect"]:
+        parts.append("- איסוף /py_start נוקה")
+    if cleared["inline_session"] or cleared["inline_tokens_removed"]:
+        extra = []
+        if cleared["inline_session"]:
+            extra.append("inline session")
+        if cleared["inline_tokens_removed"]:
+            extra.append(f"{cleared['inline_tokens_removed']} טוקני inline")
+        parts.append("- נוקה מצב אינליין למשתמש (" + ", ".join(extra) + ")")
+    if len(parts) == 1:
+        parts.append("(לא נמצא מה לנקות)")
+
+    await update.message.reply_text("\n".join(parts))
+
+
 async def health_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
@@ -1729,6 +1808,7 @@ def main():
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, collect_text_handler))
         app.add_handler(CommandHandler("env", env_cmd))
         app.add_handler(CommandHandler("reset", reset_cmd))
+        app.add_handler(CommandHandler("clear", clear_cmd))
         app.add_handler(CommandHandler("health", health_cmd))
         app.add_handler(CommandHandler("whoami", whoami_cmd))
         app.add_handler(CommandHandler("debug_on", debug_on_cmd))
