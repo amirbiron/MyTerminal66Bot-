@@ -19,6 +19,9 @@ import unicodedata
 import re
 import hashlib
 import secrets
+import random
+import inspect
+import ast
 
 from activity_reporter import create_reporter
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
@@ -157,7 +160,10 @@ def exec_python_in_shared_context(src: str, context_key: int):
     global PY_CONTEXT
     ctx = PY_CONTEXT.get(context_key)
     if ctx is None:
-        ctx = {"__builtins__": __builtins__}
+        ctx = {"__builtins__": __builtins__, "__name__": "__main__"}
+    else:
+        # ודא ש-__name__ קיים למען קוד עם if __name__ == "__main__"
+        ctx.setdefault("__name__", "__main__")
         PY_CONTEXT[context_key] = ctx
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
@@ -329,6 +335,12 @@ def normalize_code(text: str) -> str:
     text = text.replace("\u00AD", "")
     # CRLF ל-LF
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # הסרת גדרות קוד מרקדאון ```lang ... ```
+    try:
+        text = re.sub(r"(?m)^\s*```[a-zA-Z0-9_+\-]*\s*$", "", text)
+        text = re.sub(r"(?m)^\s*```\s*$", "", text)
+    except Exception:
+        pass
     return text
 
 
@@ -495,6 +507,85 @@ async def on_post_init(app: Application) -> None:
 
 
 # ==== פקודות ====
+ROCKET_FRAMES = [
+    "   🚀",
+    "   🚀\n   🔥",
+    "   🚀\n  🔥🔥",
+    "   🚀\n 🔥🔥🔥",
+    "   🚀\n🔥🔥🔥🔥",
+]
+
+HEARTS = [
+    "❤️",
+    "🧡",
+    "💛",
+    "💚",
+    "💙",
+    "💜",
+    "🤍",
+    "🤎",
+    "🖤",
+    "💖",
+    "💗",
+    "💘",
+    "💝",
+]
+
+def _build_hearts_grid(rows: int = 8, cols: int = 12) -> str:
+    rows = max(1, min(rows, 15))
+    cols = max(5, min(cols, 30))
+    return "\n".join("".join(random.choice(HEARTS) for _ in range(cols)) for _ in range(rows))
+
+async def rocket(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if not chat_id:
+        return
+    msg = await _.bot.send_message(chat_id, "🚀")
+    for frame in ROCKET_FRAMES:
+        try:
+            await _.bot.edit_message_text(chat_id=chat_id, message_id=msg.message_id, text=frame)
+            await asyncio.sleep(0.5)
+        except Exception:
+            # ננסה להמשיך גם אם עריכה מסוימת נכשלת
+            pass
+    await _.bot.send_message(chat_id, "🚀💨 טס לחלל!")
+
+async def hearts(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    # פרמטרים אופציונליים: /hearts <rows> <cols>
+    try:
+        parts = (update.message.text or "").strip().split()
+        r = int(parts[1]) if len(parts) >= 2 else 8
+        c = int(parts[2]) if len(parts) >= 3 else 12
+    except Exception:
+        r, c = 8, 12
+    await update.message.reply_text(_build_hearts_grid(r, c))
+
+async def tasks(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """מציג את פלט TaskManager בצ'אט, אם המודול קיים.
+    ניתן להגדיר את שם המודול דרך ENV בשם TASK_MANAGER_MODULE (ברירת מחדל: task_manager).
+    """
+    module_name = os.getenv("TASK_MANAGER_MODULE", "task_manager")
+    try:
+        mod = __import__(module_name, fromlist=["TaskManager"])  # type: ignore[import]
+        TaskManager = getattr(mod, "TaskManager", None)
+        if TaskManager is None:
+            return await update.message.reply_text("❗ לא נמצאה המחלקה TaskManager במודול")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            TaskManager().run()
+        text = buf.getvalue() or "(no output)"
+        # שליחה בחלקים בטוחים לאורך
+        for chunk in _split_to_chunks_by_lines(text, TG_MAX_MESSAGE):
+            if not chunk:
+                continue
+            await update.message.reply_text(chunk[:TG_MAX_MESSAGE])
+    except ModuleNotFoundError:
+        await update.message.reply_text(
+            "❗ מודול TaskManager לא נמצא. הוסף 'task_manager.py' עם המחלקה או קבע TASK_MANAGER_MODULE"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"ERR:\n{e}")
+
 async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
     report_nowait(update.effective_user.id if update.effective_user else 0)
     if not allowed(update):
@@ -1181,13 +1272,18 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     cleaned = textwrap.dedent(code)
     cleaned = normalize_code(cleaned).strip("\n") + "\n"
 
-    def _exec_in_context(src: str, chat_id: int):
+    def _exec_in_context(src: str, chat_id: int, _update: Update, _context: ContextTypes.DEFAULT_TYPE):
         global PY_CONTEXT
         # אתחול ראשוני של הקשר ההרצה לצ'אט הנוכחי
         ctx = PY_CONTEXT.get(chat_id)
         if ctx is None:
-            ctx = {"__builtins__": __builtins__}
+            ctx = {"__builtins__": __builtins__, "__name__": "__main__"}
             PY_CONTEXT[chat_id] = ctx
+        else:
+            ctx.setdefault("__name__", "__main__")
+        # חשיפת אובייקטי טלגרם כדי לאפשר שימוש ישיר בקוד
+        ctx["update"] = _update
+        ctx["context"] = _context
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
         tb_text = None
@@ -1200,7 +1296,9 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
     try:
         chat_id = _chat_id(update)
-        out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
+        out, err, tb_text = await asyncio.wait_for(
+            asyncio.to_thread(_exec_in_context, cleaned, chat_id, update, _), timeout=TIMEOUT
+        )
 
         # Attempt dynamic install on ModuleNotFoundError, up to 3 modules per run
         attempts = 0
@@ -1223,7 +1321,10 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ כשל בהתקנת '{missing_mod}' (קוד {e.returncode})")
                 break
             attempts += 1
-            out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
+            out, err, tb_text = await asyncio.wait_for(
+                asyncio.to_thread(_exec_in_context, cleaned, chat_id, update, _),
+                timeout=TIMEOUT,
+            )
 
         parts = []
         if out.strip():
@@ -1232,7 +1333,28 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
             parts.append("STDERR:\n" + err.rstrip())
         if tb_text and tb_text.strip():
             parts.append(tb_text.rstrip())
-        resp = "\n".join(parts).strip() or "(no output)"
+
+        resp = "\n".join(parts).strip()
+
+        # אם אין פלט – ננסה להעריך את הביטוי האחרון (כמו REPL)
+        if not resp:
+            try:
+                mod = ast.parse(cleaned, mode="exec")
+                if getattr(mod, "body", None):
+                    last = mod.body[-1]
+                    if isinstance(last, ast.Expr):
+                        expr_code = compile(ast.Expression(last.value), filename="<py>", mode="eval")
+                        ctx = PY_CONTEXT.get(chat_id) or {}
+                        result = eval(expr_code, ctx, ctx)
+                        if inspect.isawaitable(result):
+                            result = await result
+                        if result is not None:
+                            resp = str(result)
+            except Exception:
+                # אם נכשל – נשאיר resp ריק
+                pass
+
+        resp = resp or "(no output)"
         await send_output(update, truncate(resp), "py-output.txt")
     except asyncio.TimeoutError:
         await send_output(update, "⏱️ Timeout", "py-output.txt")
@@ -1273,6 +1395,136 @@ async def js_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await send_output(update, cleaned.rstrip() + f"\n\nERR:\n{e}", "js-output.txt")
 
+
+async def call_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """קורא לפונקציה בשם נתון מתוך הקשר /py של הצ'אט.
+    שימוש: /call func_name [args...]
+    - מזהה אוטומטית פונקציות sync/async
+    - אם החתימה כוללת פרמטר בשם 'update' – נעביר את אובייקט ה-Update
+      ואם כוללת 'context' או 'ctx' – נעביר את אובייקט ה-Context
+    - יתר הארגומנטים יועברו כמחרוזות/מספרים (ניסיון המרה ל-int/float)
+    """
+    report_nowait(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return
+
+    cmdline = (update.message.text or "").partition(" ")[2].strip()
+    if not cmdline:
+        return await update.message.reply_text("שימוש: /call <שם_פונקציה> [ארגומנטים]")
+
+    try:
+        tokens = shlex.split(cmdline, posix=True)
+    except ValueError:
+        return await update.message.reply_text("❗ שגיאת פרסינג בארגומנטים")
+    if not tokens:
+        return await update.message.reply_text("❗ לא צוין שם פונקציה")
+
+    func_name = tokens[0]
+    raw_args = tokens[1:]
+
+    chat_id = _chat_id(update)
+    ctx = PY_CONTEXT.get(chat_id)
+    if ctx is None or func_name not in ctx:
+        return await update.message.reply_text(f"❗ הפונקציה '{func_name}' לא נמצאה בהקשר הנוכחי. הגדר אותה קודם עם /py.")
+
+    func = ctx.get(func_name)
+    if not callable(func):
+        return await update.message.reply_text(f"❗ '{func_name}' אינה פונקציה")
+
+    sig = None
+    try:
+        sig = inspect.signature(func)
+    except Exception:
+        sig = None
+
+    # בניית ארגומנטים
+    def _parse_arg(tok: str):
+        try:
+            if tok.lower() in ("true", "false"):
+                return tok.lower() == "true"
+            if tok.startswith("0x"):
+                return int(tok, 16)
+            if tok.isdigit() or (tok.startswith("-") and tok[1:].isdigit()):
+                return int(tok)
+            f = float(tok)
+            return f
+        except Exception:
+            return tok
+
+    pos_args = [_parse_arg(a) for a in raw_args]
+    kw_args = {}
+
+    has_update = False
+    ctx_param_name = None
+    if sig is not None:
+        param_names = list(sig.parameters.keys())
+        has_update = "update" in param_names
+        # הזרקת update/context לפי שם פרמטר
+        if has_update:
+            kw_args["update"] = update
+        for cand in ("context", "ctx"):
+            if cand in param_names:
+                kw_args[cand] = _
+                ctx_param_name = cand
+                break
+
+    # אם זו פונקציית-בוט (עם update/context), נעדיף להעביר ארגומנטים דרך context.args כטקסטים
+    # כדי לתמוך בקוד בסגנון PTB שמסתמך על context.args
+    if has_update or ctx_param_name is not None:
+        prev_args = getattr(_, "args", None)
+        try:
+            try:
+                _.args = [str(a) for a in raw_args]
+            except Exception:
+                setattr(_, "args", [str(a) for a in raw_args])
+            pos_for_call = []  # בלי ארגומנטים פוזיציוניים כדי לא להתנגש בחתימה
+            buf = io.StringIO()
+
+            async def _run_call():
+                with contextlib.redirect_stdout(buf):
+                    value = func(*pos_for_call, **kw_args)
+                    if inspect.isawaitable(value):
+                        value = await value
+                    return value
+
+            try:
+                result = await asyncio.wait_for(_run_call(), timeout=TIMEOUT)
+            finally:
+                # שחזור args לקדמותו
+                try:
+                    _.args = prev_args
+                except Exception:
+                    pass
+        except asyncio.TimeoutError:
+            return await send_output(update, "⏱️ Timeout", "call-output.txt")
+        except Exception as e:
+            return await send_output(update, f"ERR:\n{e}", "call-output.txt")
+    else:
+        # פונקציה רגילה ללא update/context – נעביר ארגומנטים פוזיציוניים מומרי טיפוס
+        buf = io.StringIO()
+
+        async def _run_call():
+            with contextlib.redirect_stdout(buf):
+                value = func(*pos_args)
+                if inspect.isawaitable(value):
+                    value = await value
+                return value
+
+        try:
+            result = await asyncio.wait_for(_run_call(), timeout=TIMEOUT)
+        except asyncio.TimeoutError:
+            return await send_output(update, "⏱️ Timeout", "call-output.txt")
+        except Exception as e:
+            return await send_output(update, f"ERR:\n{e}", "call-output.txt")
+
+    out_text = buf.getvalue().strip()
+    parts = []
+    if out_text:
+        parts.append(out_text)
+    if result is not None and str(result).strip():
+        parts.append(str(result))
+    resp = "\n".join(parts).strip() or "✓ בוצע"
+    await send_output(update, truncate(resp), "call-output.txt")
 
 async def py_start_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     """מתחיל איסוף קוד רב-הודעות עבור הצ'אט הנוכחי."""
@@ -1463,10 +1715,13 @@ def main():
         app.add_handler(InlineQueryHandler(inline_query))
         app.add_handler(ChosenInlineResultHandler(on_chosen_inline_result))
         app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^refresh:"))
+        # קלטים בסיסיים
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
         app.add_handler(CommandHandler("js", js_cmd))
+        # פקודות כלליות בלבד; אין תלות בדוגמאות ספציפיות
+        app.add_handler(CommandHandler("call", call_cmd))
         # איסוף קוד רב-הודעות
         app.add_handler(CommandHandler("py_start", py_start_cmd))
         app.add_handler(CommandHandler("py_run", py_run_cmd))
