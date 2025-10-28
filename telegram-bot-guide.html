@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>מדריך ליצירת בוט טלגרם מתקדם בפייתון</title>
+    <title>מדריך ליצירת בוט טרמינל לטלגרם בפייתון</title>
     <style>
         * {
             margin: 0;
@@ -377,7 +377,7 @@
     <div class="container">
         <header>
             <div class="emoji-large">🤖</div>
-            <h1>מדריך ליצירת בוט טלגרם מתקדם</h1>
+            <h1>מדריך ליצירת בוט טרמינל לטלגרם</h1>
             <p class="subtitle">פייתון | Python Telegram Bot | הרצת קוד בזמן אמת</p>
         </header>
 
@@ -398,7 +398,7 @@
                 <h2><span class="emoji">📖</span> מבוא</h2>
                 
                 <p>
-                    ברוכים הבאים למדריך המקיף ליצירת בוט טלגרם מתקדם בפייתון! 
+                    ברוכים הבאים למדריך המקיף ליצירת בוט טרמינל לטלגרם בפייתון! 
                     מדריך זה מבוסס על יישום אמיתי ומתקדם של בוט טרמינל שמאפשר הרצת 
                     קוד בזמן אמת בשפות תכנות שונות.
                 </p>
@@ -406,7 +406,7 @@
                 <div class="highlight-box">
                     <h4><span class="emoji">💡</span> למי מיועד המדריך?</h4>
                     <ul>
-                        <li>מפתחים שרוצים ללמוד כיצד לבנות בוט טלגרם מתקדם</li>
+                        <li>מפתחים שרוצים ללמוד כיצד לבנות בוט טרמינל לטלגרם</li>
                         <li>מי שמעוניין ליצור סביבת פיתוח מרחוק דרך טלגרם</li>
                         <li>מי שרוצה להבין את העקרונות של הרצת קוד בטוחה</li>
                         <li>מפתחים שמחפשים דוגמאות מעשיות וקוד מוכן לשימוש</li>
@@ -1140,27 +1140,6 @@ class SimpleActivityReporter:
             <section id="advanced">
                 <h2><span class="emoji">🚀</span> פיצ'רים מתקדמים</h2>
 
-                <h3><span class="emoji">🎨</span> הוספת פקודות מותאמות אישית</h3>
-
-                <pre class="has-label"><span class="code-label">Python</span><code>async def rocket(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """אנימציית רקטה"""
-    frames = [
-        "   🚀",
-        "   🚀\n   🔥",
-        "   🚀\n  🔥🔥",
-        "   🚀\n 🔥🔥🔥",
-    ]
-    
-    msg = await update.message.reply_text("🚀")
-    for frame in frames:
-        await msg.edit_text(frame)
-        await asyncio.sleep(0.5)
-    
-    await update.message.reply_text("🚀💨 טס לחלל!")
-
-# הוספה ל-application
-app.add_handler(CommandHandler("rocket", rocket))</code></pre>
-
                 <h3><span class="emoji">🔌</span> מצב Inline מתקדם</h3>
 
                 <pre class="has-label"><span class="code-label">Python</span><code>from telegram import InlineQueryResultArticle, InputTextMessageContent
@@ -1302,7 +1281,7 @@ kill -9 [PID]</code></pre>
         </main>
 
         <footer>
-            <p><strong>🤖 מדריך ליצירת בוט טלגרם בפייתון</strong></p>
+            <p><strong>🤖 מדריך ליצירת בוט טרמינל לטלגרם בפייתון</strong></p>
             <p>נוצר עם ❤️ על ידי הקהילה</p>
             <p style="margin-top: 20px; opacity: 0.8; font-size: 0.9em;">
                 זכרו: כוח רב מגיע עם אחריות רבה. השתמשו בבוט באחריות ובצורה אתית.
