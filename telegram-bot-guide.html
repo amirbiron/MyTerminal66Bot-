@@ -1,0 +1,1313 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>מדריך ליצירת בוט טלגרם מתקדם בפייתון</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.8;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 60px 40px;
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 3em;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        header .subtitle {
+            font-size: 1.3em;
+            opacity: 0.95;
+        }
+
+        .emoji-large {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+
+        nav {
+            background: #f8f9fa;
+            padding: 20px 40px;
+            border-bottom: 3px solid #667eea;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        nav ul {
+            list-style: none;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 20px;
+        }
+
+        nav a {
+            text-decoration: none;
+            color: #667eea;
+            font-weight: bold;
+            padding: 10px 20px;
+            border-radius: 25px;
+            transition: all 0.3s;
+            background: white;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+
+        nav a:hover {
+            background: #667eea;
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        main {
+            padding: 40px;
+        }
+
+        section {
+            margin-bottom: 60px;
+            scroll-margin-top: 80px;
+        }
+
+        h2 {
+            color: #667eea;
+            font-size: 2.5em;
+            margin-bottom: 30px;
+            padding-bottom: 15px;
+            border-bottom: 3px solid #667eea;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        h3 {
+            color: #764ba2;
+            font-size: 1.8em;
+            margin: 30px 0 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        h4 {
+            color: #555;
+            font-size: 1.4em;
+            margin: 20px 0 15px;
+        }
+
+        p {
+            margin-bottom: 20px;
+            font-size: 1.1em;
+            line-height: 1.8;
+        }
+
+        .highlight-box {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-right: 5px solid #667eea;
+            padding: 25px;
+            margin: 25px 0;
+            border-radius: 10px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .warning-box {
+            background: linear-gradient(135deg, #fff5f5 0%, #ffe5e5 100%);
+            border-right: 5px solid #e53e3e;
+            padding: 25px;
+            margin: 25px 0;
+            border-radius: 10px;
+        }
+
+        .success-box {
+            background: linear-gradient(135deg, #f0fff4 0%, #c6f6d5 100%);
+            border-right: 5px solid #38a169;
+            padding: 25px;
+            margin: 25px 0;
+            border-radius: 10px;
+        }
+
+        .info-box {
+            background: linear-gradient(135deg, #ebf8ff 0%, #bee3f8 100%);
+            border-right: 5px solid #3182ce;
+            padding: 25px;
+            margin: 25px 0;
+            border-radius: 10px;
+        }
+
+        code {
+            background: #2d3748;
+            color: #68d391;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.95em;
+        }
+
+        pre {
+            background: #2d3748;
+            color: #e2e8f0;
+            padding: 25px;
+            border-radius: 10px;
+            overflow-x: auto;
+            margin: 25px 0;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+            position: relative;
+        }
+
+        pre code {
+            background: none;
+            padding: 0;
+            color: inherit;
+        }
+
+        .code-label {
+            position: absolute;
+            top: 10px;
+            left: 15px;
+            background: #667eea;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 5px;
+            font-size: 0.85em;
+            font-weight: bold;
+        }
+
+        pre.has-label {
+            padding-top: 50px;
+        }
+
+        ul, ol {
+            margin: 20px 0 20px 40px;
+        }
+
+        li {
+            margin-bottom: 12px;
+            font-size: 1.05em;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 25px;
+            margin: 30px 0;
+        }
+
+        .feature-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+            transition: transform 0.3s;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .feature-card h3 {
+            color: white;
+            margin-bottom: 15px;
+        }
+
+        .step-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 45px;
+            height: 45px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 50%;
+            font-weight: bold;
+            font-size: 1.3em;
+            margin-left: 15px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 25px 0;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        th {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 18px;
+            text-align: right;
+            font-size: 1.1em;
+        }
+
+        td {
+            padding: 15px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        tr:hover {
+            background: #f7fafc;
+        }
+
+        footer {
+            background: #2d3748;
+            color: white;
+            text-align: center;
+            padding: 40px;
+            margin-top: 60px;
+        }
+
+        footer p {
+            margin: 10px 0;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 15px 35px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 30px;
+            font-weight: bold;
+            margin: 10px;
+            transition: all 0.3s;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        .toc {
+            background: #f8f9fa;
+            padding: 30px;
+            border-radius: 15px;
+            margin: 30px 0;
+        }
+
+        .toc h3 {
+            color: #667eea;
+            margin-bottom: 20px;
+        }
+
+        .toc ul {
+            list-style: none;
+            margin: 0;
+        }
+
+        .toc li {
+            margin-bottom: 10px;
+        }
+
+        .toc a {
+            color: #764ba2;
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+
+        .toc a:hover {
+            color: #667eea;
+            text-decoration: underline;
+        }
+
+        @media (max-width: 768px) {
+            header h1 {
+                font-size: 2em;
+            }
+
+            main {
+                padding: 20px;
+            }
+
+            h2 {
+                font-size: 1.8em;
+            }
+
+            nav ul {
+                flex-direction: column;
+            }
+
+            .feature-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .command-table {
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .emoji {
+            font-size: 1.5em;
+            margin-left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="emoji-large">🤖</div>
+            <h1>מדריך ליצירת בוט טלגרם מתקדם</h1>
+            <p class="subtitle">פייתון | Python Telegram Bot | הרצת קוד בזמן אמת</p>
+        </header>
+
+        <nav>
+            <ul>
+                <li><a href="#intro">מבוא</a></li>
+                <li><a href="#features">יכולות</a></li>
+                <li><a href="#setup">הקמה</a></li>
+                <li><a href="#structure">מבנה</a></li>
+                <li><a href="#commands">פקודות</a></li>
+                <li><a href="#security">אבטחה</a></li>
+                <li><a href="#deployment">פריסה</a></li>
+            </ul>
+        </nav>
+
+        <main>
+            <section id="intro">
+                <h2><span class="emoji">📖</span> מבוא</h2>
+                
+                <p>
+                    ברוכים הבאים למדריך המקיף ליצירת בוט טלגרם מתקדם בפייתון! 
+                    מדריך זה מבוסס על יישום אמיתי ומתקדם של בוט טרמינל שמאפשר הרצת 
+                    קוד בזמן אמת בשפות תכנות שונות.
+                </p>
+
+                <div class="highlight-box">
+                    <h4><span class="emoji">💡</span> למי מיועד המדריך?</h4>
+                    <ul>
+                        <li>מפתחים שרוצים ללמוד כיצד לבנות בוט טלגרם מתקדם</li>
+                        <li>מי שמעוניין ליצור סביבת פיתוח מרחוק דרך טלגרם</li>
+                        <li>מי שרוצה להבין את העקרונות של הרצת קוד בטוחה</li>
+                        <li>מפתחים שמחפשים דוגמאות מעשיות וקוד מוכן לשימוש</li>
+                    </ul>
+                </div>
+
+                <div class="warning-box">
+                    <h4><span class="emoji">⚠️</span> אזהרת אבטחה חשובה!</h4>
+                    <p>
+                        בוט זה מאפשר הרצת קוד שרירותי על השרת. יש להשתמש בו <strong>רק</strong> 
+                        בסביבות מבודדות (Docker/VM) ולהגביל גישה רק למשתמשים מורשים. 
+                        אל תריצו את הבוט על מכונה עם מידע רגיש!
+                    </p>
+                </div>
+            </section>
+
+            <section id="features">
+                <h2><span class="emoji">✨</span> יכולות הבוט</h2>
+
+                <div class="feature-grid">
+                    <div class="feature-card">
+                        <h3><span class="emoji">🐍</span> הרצת Python</h3>
+                        <p>הרצת קוד פייתון עם שמירת מצב בין הרצות, התקנה אוטומטית של ספריות, ותמיכה ב-async/await</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <h3><span class="emoji">📜</span> הרצת JavaScript</h3>
+                        <p>הרצת קוד JS באמצעות Node.js עם תמיכה מלאה ב-ES6+ ובספריות npm</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <h3><span class="emoji">☕</span> הרצת Java</h3>
+                        <p>קומפילציה והרצה אוטומטית של קוד Java עם זיהוי חכם של שם המחלקה</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <h3><span class="emoji">💻</span> פקודות Shell</h3>
+                        <p>הרצת פקודות shell עם שמירת cwd ו-environment variables בין הפקודות</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <h3><span class="emoji">🔐</span> מערכת הרשאות</h3>
+                        <p>בקרת גישה מתקדמת עם allowlist דינמי לפקודות והגבלה למשתמשים מורשים</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <h3><span class="emoji">🌐</span> מצב Inline</h3>
+                        <p>יכולת להריץ קוד ישירות מכל צ'אט דרך מצב inline עם כפתור רענון</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <h3><span class="emoji">📊</span> דיווח פעילות</h3>
+                        <p>מעקב ודיווח אוטומטי של פעילות משתמשים למסד נתונים MongoDB</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <h3><span class="emoji">🔄</span> ניהול סשנים</h3>
+                        <p>שמירת מצב נפרד לכל צ'אט עם תמיכה בסשנים מרובים במקביל</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="setup">
+                <h2><span class="emoji">🚀</span> התקנה והקמה</h2>
+
+                <h3><span class="step-number">1</span> יצירת בוט בטלגרם</h3>
+                
+                <div class="info-box">
+                    <p><strong>שיחה עם BotFather:</strong></p>
+                    <ol>
+                        <li>פתחו את טלגרם וחפשו את <code>@BotFather</code></li>
+                        <li>שלחו את הפקודה <code>/newbot</code></li>
+                        <li>בחרו שם לבוט (למשל: My Terminal Bot)</li>
+                        <li>בחרו username לבוט (חייב להסתיים ב-bot, למשל: myterminal_bot)</li>
+                        <li>שמרו את ה-TOKEN שתקבלו - זה המפתח לבוט שלכם!</li>
+                    </ol>
+                </div>
+
+                <h3><span class="step-number">2</span> אפשור מצב Inline</h3>
+                
+                <pre class="has-label"><span class="code-label">BotFather</span><code># שלחו ל-BotFather:
+/setinline
+# בחרו את הבוט שלכם
+# הקלידו placeholder text (למשל: "חפש פקודה...")</code></pre>
+
+                <h3><span class="step-number">3</span> התקנת תלויות</h3>
+
+                <p>צרו קובץ <code>requirements.txt</code> עם התלויות הבאות:</p>
+
+                <pre class="has-label"><span class="code-label">requirements.txt</span><code>python-telegram-bot>=22.0,<23.0
+httpx>=0.27,<0.29
+pymongo[srv]>=4.6,<5
+python-dotenv>=1.0,<2
+
+# אופציונלי - ספריות נוספות
+numpy>=1.26,<3
+matplotlib>=3.8,<3.10
+pandas>=2.2,<3
+requests>=2.32,<3</code></pre>
+
+                <p>התקינו את הספריות:</p>
+
+                <pre class="has-label"><span class="code-label">Bash</span><code>pip install -r requirements.txt</code></pre>
+
+                <h3><span class="step-number">4</span> הגדרת משתני סביבה</h3>
+
+                <p>צרו קובץ <code>.env</code> (ואל תעלו אותו ל-git!):</p>
+
+                <pre class="has-label"><span class="code-label">.env</span><code># טוקן הבוט שקיבלתם מ-BotFather
+BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+
+# מזהה המשתמש שלכם (השיגו באמצעות /whoami)
+OWNER_ID=123456789
+
+# הגדרות אופציונליות
+CMD_TIMEOUT=60
+TG_MAX_MESSAGE=4000
+MAX_OUTPUT=10000
+
+# האם לאפשר את כל הפקודות (מסוכן!)
+ALLOW_ALL_COMMANDS=false</code></pre>
+
+                <div class="success-box">
+                    <h4><span class="emoji">💡</span> טיפ: איך למצוא את ה-OWNER_ID שלכם?</h4>
+                    <p>
+                        לאחר הפעלת הבוט, שלחו לו את הפקודה <code>/whoami</code> והוא יחזיר לכם את המזהה הייחודי שלכם.
+                    </p>
+                </div>
+            </section>
+
+            <section id="structure">
+                <h2><span class="emoji">🏗️</span> מבנה הפרויקט</h2>
+
+                <h3><span class="emoji">📁</span> מבנה התיקיות</h3>
+
+                <pre class="has-label"><span class="code-label">Structure</span><code>my-telegram-bot/
+├── bot.py                    # קובץ הבוט הראשי
+├── activity_reporter.py      # מודול דיווח פעילות
+├── task_manager.py           # דוגמה למודול משימות
+├── story.py                  # דוגמה לסקריפט פשוט
+├── requirements.txt          # תלויות
+├── Dockerfile               # הגדרות Docker
+├── .env                     # משתני סביבה (לא מעלים ל-git!)
+├── .gitignore               # קבצים שלא מעלים
+└── README.md                # תיעוד</code></pre>
+
+                <h3><span class="emoji">🧩</span> המודולים העיקריים</h3>
+
+                <h4>1. מבנה בסיסי של הבוט</h4>
+
+                <pre class="has-label"><span class="code-label">Python</span><code>#!/usr/bin/env python3
+import os
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+# קריאת משתני סביבה
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+
+# פונקציית בדיקת הרשאות
+def allowed(update: Update) -> bool:
+    return update.effective_user.id == OWNER_ID
+
+# פקודת /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "שלום! אני בוט טרמינל מתקדם 🤖\n"
+        "שלח /help לעזרה"
+    )
+
+# פונקציה ראשית
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+    
+    # הוספת handlers
+    app.add_handler(CommandHandler("start", start))
+    
+    # הפעלת הבוט
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+                <h4>2. הוספת הרצת פקודות Shell</h4>
+
+                <pre class="has-label"><span class="code-label">Python</span><code>import subprocess
+import shlex
+
+# רשימת פקודות מותרות
+ALLOWED_CMDS = {"ls", "pwd", "echo", "cat", "grep", "find"}
+
+async def sh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        return await update.message.reply_text("❌ אין הרשאה")
+    
+    # קבלת הפקודה מהמשתמש
+    cmdline = update.message.text.partition(" ")[2].strip()
+    if not cmdline:
+        return await update.message.reply_text("שימוש: /sh <פקודה>")
+    
+    # בדיקת הרשאות
+    parts = shlex.split(cmdline)
+    if parts[0] not in ALLOWED_CMDS:
+        return await update.message.reply_text(f"❗ פקודה לא מאושרת: {parts[0]}")
+    
+    # הרצת הפקודה
+    try:
+        result = subprocess.run(
+            cmdline,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        output = result.stdout or result.stderr or "(no output)"
+        await update.message.reply_text(f"$ {cmdline}\n\n{output}")
+    except subprocess.TimeoutExpired:
+        await update.message.reply_text("⏱️ Timeout")
+    except Exception as e:
+        await update.message.reply_text(f"❌ שגיאה: {e}")</code></pre>
+
+                <h4>3. הרצת קוד Python</h4>
+
+                <pre class="has-label"><span class="code-label">Python</span><code>import io
+import contextlib
+import traceback
+
+# הקשר גלובלי לשמירת משתנים
+PY_CONTEXT = {}
+
+async def py_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update):
+        return
+    
+    code = update.message.text.partition(" ")[2].strip()
+    if not code:
+        return await update.message.reply_text("שימוש: /py <קוד>")
+    
+    # הכנת הקשר
+    chat_id = update.effective_chat.id
+    if chat_id not in PY_CONTEXT:
+        PY_CONTEXT[chat_id] = {"__builtins__": __builtins__}
+    
+    ctx = PY_CONTEXT[chat_id]
+    
+    # לכידת פלט
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+    
+    try:
+        with contextlib.redirect_stdout(stdout_buffer), \
+             contextlib.redirect_stderr(stderr_buffer):
+            exec(code, ctx, ctx)
+        
+        output = stdout_buffer.getvalue() or "(no output)"
+        await update.message.reply_text(output)
+    except Exception:
+        tb = traceback.format_exc()
+        await update.message.reply_text(f"❌ שגיאה:\n{tb}")</code></pre>
+
+                <h4>4. ניהול סשנים</h4>
+
+                <pre class="has-label"><span class="code-label">Python</span><code># מיפוי chat_id -> session data
+sessions = {}
+
+def get_session(update: Update):
+    chat_id = update.effective_chat.id
+    if chat_id not in sessions:
+        sessions[chat_id] = {
+            "cwd": os.getcwd(),
+            "env": dict(os.environ)
+        }
+    return sessions[chat_id]
+
+# פקודת cd
+def handle_cd(sess, target_dir):
+    new_path = os.path.abspath(
+        os.path.join(sess["cwd"], target_dir)
+    )
+    if os.path.isdir(new_path):
+        sess["cwd"] = new_path
+        return f"📁 cwd: {new_path}"
+    return f"❌ תיקייה לא נמצאה: {target_dir}"</code></pre>
+            </section>
+
+            <section id="commands">
+                <h2><span class="emoji">⌨️</span> פקודות הבוט</h2>
+
+                <p>להלן רשימת הפקודות המלאה שהבוט תומך בהן:</p>
+
+                <div class="command-table">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>תיאור</th>
+                                <th>דוגמה</th>
+                                <th>פקודה</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>הודעת התחלה והסבר על הבוט</td>
+                                <td><code>/start</code></td>
+                                <td><strong>/start</strong></td>
+                            </tr>
+                            <tr>
+                                <td>הרצת פקודת shell</td>
+                                <td><code>/sh ls -la</code></td>
+                                <td><strong>/sh</strong></td>
+                            </tr>
+                            <tr>
+                                <td>הרצת קוד Python</td>
+                                <td><code>/py print("Hello")</code></td>
+                                <td><strong>/py</strong></td>
+                            </tr>
+                            <tr>
+                                <td>הרצת קוד JavaScript</td>
+                                <td><code>/js console.log("Hi")</code></td>
+                                <td><strong>/js</strong></td>
+                            </tr>
+                            <tr>
+                                <td>הרצת קוד Java</td>
+                                <td><code>/java public class Main {...}</code></td>
+                                <td><strong>/java</strong></td>
+                            </tr>
+                            <tr>
+                                <td>התחלת איסוף קוד רב-שורות</td>
+                                <td><code>/py_start</code></td>
+                                <td><strong>/py_start</strong></td>
+                            </tr>
+                            <tr>
+                                <td>הרצת כל הקוד שנאסף</td>
+                                <td><code>/py_run</code></td>
+                                <td><strong>/py_run</strong></td>
+                            </tr>
+                            <tr>
+                                <td>קריאה לפונקציה מההקשר</td>
+                                <td><code>/call my_func arg1 arg2</code></td>
+                                <td><strong>/call</strong></td>
+                            </tr>
+                            <tr>
+                                <td>הצגת משתני סביבה</td>
+                                <td><code>/env</code></td>
+                                <td><strong>/env</strong></td>
+                            </tr>
+                            <tr>
+                                <td>איפוס cwd/env לברירת מחדל</td>
+                                <td><code>/reset</code></td>
+                                <td><strong>/reset</strong></td>
+                            </tr>
+                            <tr>
+                                <td>ניקוי מלא של הסשן</td>
+                                <td><code>/clear</code></td>
+                                <td><strong>/clear</strong></td>
+                            </tr>
+                            <tr>
+                                <td>הצגת פקודות מותרות</td>
+                                <td><code>/list</code></td>
+                                <td><strong>/list</strong></td>
+                            </tr>
+                            <tr>
+                                <td>הוספת פקודות לרשימה המאושרת</td>
+                                <td><code>/allow curl,wget</code></td>
+                                <td><strong>/allow</strong></td>
+                            </tr>
+                            <tr>
+                                <td>הסרת פקודות מהרשימה</td>
+                                <td><code>/deny rm,rmdir</code></td>
+                                <td><strong>/deny</strong></td>
+                            </tr>
+                            <tr>
+                                <td>עדכון הרשימה המלאה</td>
+                                <td><code>/update ls,pwd,cat</code></td>
+                                <td><strong>/update</strong></td>
+                            </tr>
+                            <tr>
+                                <td>בדיקת חיבור</td>
+                                <td><code>/health</code></td>
+                                <td><strong>/health</strong></td>
+                            </tr>
+                            <tr>
+                                <td>הצגת מזהה המשתמש</td>
+                                <td><code>/whoami</code></td>
+                                <td><strong>/whoami</strong></td>
+                            </tr>
+                            <tr>
+                                <td>הפעלה מחדש של הבוט</td>
+                                <td><code>/restart</code></td>
+                                <td><strong>/restart</strong></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h3><span class="emoji">🎯</span> דוגמאות שימוש</h3>
+
+                <div class="highlight-box">
+                    <h4>דוגמה 1: הרצת Python עם שמירת מצב</h4>
+                    <pre><code># הודעה ראשונה
+/py x = 42
+
+# הודעה שנייה (x עדיין קיים!)
+/py print(f"x = {x}")</code></pre>
+                </div>
+
+                <div class="highlight-box">
+                    <h4>דוגמה 2: קוד רב-שורות</h4>
+                    <pre><code># התחלת איסוף
+/py_start
+
+# שליחת שורות קוד (ללא /py)
+def greet(name):
+    return f"שלום {name}!"
+
+result = greet("עולם")
+print(result)
+
+# הרצה
+/py_run</code></pre>
+                </div>
+
+                <div class="highlight-box">
+                    <h4>דוגמה 3: הרצת JavaScript</h4>
+                    <pre><code>/js
+const numbers = [1, 2, 3, 4, 5];
+const sum = numbers.reduce((a, b) => a + b, 0);
+console.log(`הסכום: ${sum}`);</code></pre>
+                </div>
+
+                <div class="highlight-box">
+                    <h4>דוגמה 4: עבודה עם קבצים</h4>
+                    <pre><code># יצירת קובץ
+/sh echo "Hello World" > test.txt
+
+# קריאה
+/sh cat test.txt
+
+# מחיקה
+/sh rm test.txt</code></pre>
+                </div>
+            </section>
+
+            <section id="security">
+                <h2><span class="emoji">🔐</span> אבטחה והרשאות</h2>
+
+                <h3><span class="emoji">🛡️</span> עקרונות אבטחה</h3>
+
+                <div class="warning-box">
+                    <h4>סיכונים מרכזיים:</h4>
+                    <ul>
+                        <li><strong>הרצת קוד שרירותי</strong> - המשתמש יכול להריץ כל קוד על השרת</li>
+                        <li><strong>גישה לקבצים</strong> - יכולת קריאה/כתיבה/מחיקה של קבצים</li>
+                        <li><strong>צריכת משאבים</strong> - קוד יכול להעמיס על המעבד/זיכרון</li>
+                        <li><strong>התקנת ספריות</strong> - התקנה אוטומטית עלולה להכניס קוד זדוני</li>
+                    </ul>
+                </div>
+
+                <h3><span class="emoji">✅</span> שיטות הגנה מומלצות</h3>
+
+                <h4>1. הרצה בסביבה מבודדת</h4>
+                <pre class="has-label"><span class="code-label">Docker</span><code># הרצה ב-Docker עם הגבלות
+docker run --rm \
+  --cpus="1.0" \
+  --memory="512m" \
+  --network="none" \
+  -e BOT_TOKEN="$BOT_TOKEN" \
+  -e OWNER_ID="$OWNER_ID" \
+  my-telegram-bot</code></pre>
+
+                <h4>2. הגבלת הרשאות משתמשים</h4>
+                <pre class="has-label"><span class="code-label">Python</span><code># תמיכה במספר בעלים
+OWNER_IDS = {123456, 789012}
+
+def allowed(update: Update) -> bool:
+    user_id = update.effective_user.id
+    return user_id in OWNER_IDS</code></pre>
+
+                <h4>3. בקרת פקודות Shell</h4>
+                <pre class="has-label"><span class="code-label">Python</span><code># רשימת פקודות מותרות
+ALLOWED_CMDS = {
+    "ls", "pwd", "cat", "grep", "find",
+    "echo", "date", "whoami", "df", "du"
+}
+
+# בדיקה לפני הרצה
+def is_allowed(cmdline: str) -> bool:
+    parts = shlex.split(cmdline)
+    return parts[0] in ALLOWED_CMDS</code></pre>
+
+                <h4>4. Timeout להרצות</h4>
+                <pre class="has-label"><span class="code-label">Python</span><code>import asyncio
+
+TIMEOUT = 60  # שניות
+
+async def run_with_timeout(func, *args):
+    try:
+        return await asyncio.wait_for(
+            func(*args),
+            timeout=TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        return "⏱️ Timeout"</code></pre>
+
+                <h4>5. הגבלת גודל פלט</h4>
+                <pre class="has-label"><span class="code-label">Python</span><code>MAX_OUTPUT = 10000
+
+def truncate(text: str) -> str:
+    if len(text) <= MAX_OUTPUT:
+        return text
+    return text[:MAX_OUTPUT] + f"\n\n[חתוך {len(text) - MAX_OUTPUT} תווים]"</code></pre>
+
+                <h4>6. ניקוי קוד (Sanitization)</h4>
+                <pre class="has-label"><span class="code-label">Python</span><code>import unicodedata
+import re
+
+def normalize_code(text: str) -> str:
+    # נירמול Unicode
+    text = unicodedata.normalize("NFKC", text)
+    
+    # המרת גרשיים חכמים
+    text = text.replace(""", '"').replace(""", '"')
+    
+    # הסרת תווים בלתי נראים
+    text = text.replace("\u200E", "").replace("\u200F", "")
+    
+    # הסרת markdown code fences
+    text = re.sub(r"(?m)^\s*```[a-zA-Z0-9_+\-]*\s*$", "", text)
+    
+    return text</code></pre>
+
+                <div class="success-box">
+                    <h4><span class="emoji">🎯</span> המלצות נוספות:</h4>
+                    <ul>
+                        <li>השתמשו ב-<code>.env</code> לשמירת סודות, אל תכניסו אותם לקוד</li>
+                        <li>הוסיפו logging למעקב אחר פעולות המשתמשים</li>
+                        <li>הגדירו rate limiting למניעת שימוש יתר</li>
+                        <li>עדכנו באופן קבוע את כל התלויות</li>
+                        <li>הריצו את הבוט עם משתמש לא-root</li>
+                    </ul>
+                </div>
+            </section>
+
+            <section id="deployment">
+                <h2><span class="emoji">🌍</span> פריסה (Deployment)</h2>
+
+                <h3><span class="emoji">🐳</span> פריסה עם Docker</h3>
+
+                <p>Docker מספק סביבה מבודדת ובטוחה להרצת הבוט:</p>
+
+                <h4>קובץ Dockerfile</h4>
+                <pre class="has-label"><span class="code-label">Dockerfile</span><code>FROM python:3.11-slim
+
+# התקנת תלויות מערכת
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    git \
+    curl \
+    nodejs \
+    npm \
+    default-jdk \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# התקנת תלויות Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# העתקת קוד
+COPY . .
+
+# הרצת הבוט
+CMD ["python", "bot.py"]</code></pre>
+
+                <h4>בנייה והרצה</h4>
+                <pre class="has-label"><span class="code-label">Bash</span><code># בניית הדימוי
+docker build -t my-telegram-bot .
+
+# הרצה עם משתני סביבה
+docker run -d \
+  --name telegram-bot \
+  --restart unless-stopped \
+  -e BOT_TOKEN="your-token-here" \
+  -e OWNER_ID="123456789" \
+  my-telegram-bot
+
+# צפייה בלוגים
+docker logs -f telegram-bot
+
+# עצירה
+docker stop telegram-bot</code></pre>
+
+                <h3><span class="emoji">☁️</span> פריסה ב-Cloud</h3>
+
+                <h4>Render.com (מומלץ)</h4>
+                <div class="info-box">
+                    <ol>
+                        <li>הירשמו ל-<a href="https://render.com" target="_blank">Render.com</a></li>
+                        <li>לחצו על "New +" → "Web Service"</li>
+                        <li>חברו את הריפו מ-GitHub</li>
+                        <li>הגדירו:
+                            <ul>
+                                <li><strong>Environment:</strong> Docker</li>
+                                <li><strong>Branch:</strong> main</li>
+                                <li><strong>Environment Variables:</strong> הוסיפו BOT_TOKEN ו-OWNER_ID</li>
+                            </ul>
+                        </li>
+                        <li>לחצו על "Create Web Service"</li>
+                    </ol>
+                </div>
+
+                <h4>Heroku</h4>
+                <pre class="has-label"><span class="code-label">Bash</span><code># התקנת Heroku CLI
+curl https://cli-assets.heroku.com/install.sh | sh
+
+# התחברות
+heroku login
+
+# יצירת אפליקציה
+heroku create my-telegram-bot
+
+# הגדרת משתני סביבה
+heroku config:set BOT_TOKEN="your-token"
+heroku config:set OWNER_ID="123456789"
+
+# פריסה
+git push heroku main
+
+# צפייה בלוגים
+heroku logs --tail</code></pre>
+
+                <h4>VPS (Digital Ocean / AWS / GCP)</h4>
+                <pre class="has-label"><span class="code-label">Bash</span><code># התחברות לשרת
+ssh user@your-server-ip
+
+# התקנת Docker
+curl -fsSL https://get.docker.com | sh
+
+# שליפת הקוד
+git clone https://github.com/your-username/your-bot.git
+cd your-bot
+
+# הגדרת משתני סביבה
+echo "BOT_TOKEN=your-token" > .env
+echo "OWNER_ID=123456789" >> .env
+
+# הרצה
+docker-compose up -d</code></pre>
+
+                <h3><span class="emoji">🔄</span> עדכון אוטומטי</h3>
+
+                <p>ניתן להגדיר webhook שיעדכן את הבוט אוטומטית עם כל push:</p>
+
+                <pre class="has-label"><span class="code-label">GitHub Actions (.github/workflows/deploy.yml)</span><code>name: Deploy Bot
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Deploy to Render
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          curl -X POST $RENDER_DEPLOY_HOOK</code></pre>
+            </section>
+
+            <section id="monitoring">
+                <h2><span class="emoji">📊</span> מעקב ותחזוקה</h2>
+
+                <h3><span class="emoji">📈</span> מודול דיווח פעילות</h3>
+
+                <p>הבוט כולל מערכת דיווח פעילות אוטומטית ל-MongoDB:</p>
+
+                <pre class="has-label"><span class="code-label">activity_reporter.py</span><code>from pymongo import MongoClient
+from datetime import datetime, timezone
+
+class SimpleActivityReporter:
+    def __init__(self, mongodb_uri, service_id, service_name=None):
+        self.client = MongoClient(mongodb_uri)
+        self.db = self.client["bot_monitor"]
+        self.service_id = service_id
+        self.service_name = service_name or service_id
+    
+    def report_activity(self, user_id):
+        """דיווח על אינטראקציה של משתמש"""
+        now = datetime.now(timezone.utc)
+        
+        # עדכון אינטראקציית משתמש
+        self.db.user_interactions.update_one(
+            {"service_id": self.service_id, "user_id": user_id},
+            {
+                "$set": {"last_interaction": now},
+                "$inc": {"interaction_count": 1},
+                "$setOnInsert": {"created_at": now}
+            },
+            upsert=True
+        )
+        
+        # עדכון פעילות שירות
+        self.db.service_activity.update_one(
+            {"_id": self.service_id},
+            {
+                "$set": {
+                    "last_user_activity": now,
+                    "service_name": self.service_name
+                }
+            },
+            upsert=True
+        )</code></pre>
+
+                <h3><span class="emoji">🔍</span> טיפים לתחזוקה</h3>
+
+                <div class="highlight-box">
+                    <ul>
+                        <li><strong>גיבוי קבוע</strong> - גבו את קבצי התצורה ומסד הנתונים</li>
+                        <li><strong>ניטור שגיאות</strong> - השתמשו ב-Sentry או בכלי דומה</li>
+                        <li><strong>עדכון תלויות</strong> - בדקו עדכוני אבטחה באופן קבוע</li>
+                        <li><strong>בדיקת ביצועים</strong> - עקבו אחר זמני תגובה וזיכרון</li>
+                        <li><strong>תיעוד שינויים</strong> - שמרו log של כל השינויים</li>
+                    </ul>
+                </div>
+            </section>
+
+            <section id="advanced">
+                <h2><span class="emoji">🚀</span> פיצ'רים מתקדמים</h2>
+
+                <h3><span class="emoji">🎨</span> הוספת פקודות מותאמות אישית</h3>
+
+                <pre class="has-label"><span class="code-label">Python</span><code>async def rocket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """אנימציית רקטה"""
+    frames = [
+        "   🚀",
+        "   🚀\n   🔥",
+        "   🚀\n  🔥🔥",
+        "   🚀\n 🔥🔥🔥",
+    ]
+    
+    msg = await update.message.reply_text("🚀")
+    for frame in frames:
+        await msg.edit_text(frame)
+        await asyncio.sleep(0.5)
+    
+    await update.message.reply_text("🚀💨 טס לחלל!")
+
+# הוספה ל-application
+app.add_handler(CommandHandler("rocket", rocket))</code></pre>
+
+                <h3><span class="emoji">🔌</span> מצב Inline מתקדם</h3>
+
+                <pre class="has-label"><span class="code-label">Python</span><code>from telegram import InlineQueryResultArticle, InputTextMessageContent
+
+async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """מטפל בשאילתות inline"""
+    query = update.inline_query.query
+    
+    results = [
+        InlineQueryResultArticle(
+            id="1",
+            title=f"להריץ: {query}",
+            input_message_content=InputTextMessageContent(
+                f"/sh {query}"
+            ),
+            description="הרצת פקודת shell"
+        )
+    ]
+    
+    await update.inline_query.answer(results)
+
+# הוספה
+from telegram.ext import InlineQueryHandler
+app.add_handler(InlineQueryHandler(inline_query))</code></pre>
+
+                <h3><span class="emoji">⌨️</span> מקלדות אינטראקטיביות</h3>
+
+                <pre class="has-label"><span class="code-label">Python</span><code>from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """תפריט אינטראקטיבי"""
+    keyboard = [
+        [
+            InlineKeyboardButton("🐍 Python", callback_data="lang_py"),
+            InlineKeyboardButton("📜 JavaScript", callback_data="lang_js")
+        ],
+        [
+            InlineKeyboardButton("💻 Shell", callback_data="lang_sh"),
+            InlineKeyboardButton("☕ Java", callback_data="lang_java")
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "בחר שפת תכנות:",
+        reply_markup=reply_markup
+    )
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """מטפל בלחיצות כפתורים"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "lang_py":
+        await query.edit_message_text("נבחרה Python! שלח קוד עם /py")
+
+# הוספה
+from telegram.ext import CallbackQueryHandler
+app.add_handler(CommandHandler("menu", menu))
+app.add_handler(CallbackQueryHandler(button_handler))</code></pre>
+            </section>
+
+            <section id="troubleshooting">
+                <h2><span class="emoji">🔧</span> פתרון בעיות נפוצות</h2>
+
+                <div class="warning-box">
+                    <h4>שגיאה: "Conflict: terminated by other getUpdates request"</h4>
+                    <p><strong>פתרון:</strong> יש instance אחר של הבוט שרץ. עצרו את כל ה-instances האחרים.</p>
+                    <pre><code># מציאת תהליכים
+ps aux | grep bot.py
+
+# עצירה
+kill -9 [PID]</code></pre>
+                </div>
+
+                <div class="warning-box">
+                    <h4>שגיאה: "Unauthorized"</h4>
+                    <p><strong>פתרון:</strong> הטוקן לא תקין. בדקו ש-BOT_TOKEN נכון ולא פג תוקפו.</p>
+                </div>
+
+                <div class="warning-box">
+                    <h4>שגיאה: "ModuleNotFoundError"</h4>
+                    <p><strong>פתרון:</strong> חסרה ספריה. התקינו אותה:</p>
+                    <pre><code>pip install [שם-הספריה]</code></pre>
+                </div>
+
+                <div class="warning-box">
+                    <h4>הבוט לא מגיב</h4>
+                    <p><strong>בדיקות:</strong></p>
+                    <ul>
+                        <li>האם הבוט רץ? בדקו עם <code>ps aux | grep bot.py</code></li>
+                        <li>האם יש חיבור לאינטרנט?</li>
+                        <li>האם OWNER_ID נכון? שלחו /whoami לבדיקה</li>
+                        <li>בדקו logs לשגיאות</li>
+                    </ul>
+                </div>
+            </section>
+
+            <section id="resources">
+                <h2><span class="emoji">📚</span> משאבים נוספים</h2>
+
+                <div class="feature-grid">
+                    <div class="feature-card">
+                        <h3><span class="emoji">📖</span> תיעוד רשמי</h3>
+                        <p><a href="https://docs.python-telegram-bot.org/" target="_blank" style="color: white;">python-telegram-bot</a></p>
+                        <p><a href="https://core.telegram.org/bots/api" target="_blank" style="color: white;">Telegram Bot API</a></p>
+                    </div>
+
+                    <div class="feature-card">
+                        <h3><span class="emoji">💬</span> קהילה</h3>
+                        <p><a href="https://t.me/pythontelegrambotgroup" target="_blank" style="color: white;">קבוצת טלגרם</a></p>
+                        <p><a href="https://github.com/python-telegram-bot/python-telegram-bot" target="_blank" style="color: white;">GitHub</a></p>
+                    </div>
+
+                    <div class="feature-card">
+                        <h3><span class="emoji">🎓</span> לימוד</h3>
+                        <p><a href="https://github.com/python-telegram-bot/python-telegram-bot/wiki" target="_blank" style="color: white;">Wiki</a></p>
+                        <p><a href="https://github.com/python-telegram-bot/python-telegram-bot/tree/master/examples" target="_blank" style="color: white;">דוגמאות</a></p>
+                    </div>
+
+                    <div class="feature-card">
+                        <h3><span class="emoji">🛠️</span> כלים</h3>
+                        <p><a href="https://www.docker.com/" target="_blank" style="color: white;">Docker</a></p>
+                        <p><a href="https://render.com" target="_blank" style="color: white;">Render</a></p>
+                    </div>
+                </div>
+
+                <div class="success-box">
+                    <h3><span class="emoji">🎯</span> הצעדים הבאים</h3>
+                    <ol>
+                        <li>צרו את הבוט הבסיסי שלכם</li>
+                        <li>הוסיפו פונקציות שימושיות ספציפיות לצרכים שלכם</li>
+                        <li>פרסו את הבוט ב-cloud</li>
+                        <li>שתפו את הבוט עם חברים וקבלו פידבק</li>
+                        <li>תרמו לקהילת קוד הפתוח!</li>
+                    </ol>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p><strong>🤖 מדריך ליצירת בוט טלגרם בפייתון</strong></p>
+            <p>נוצר עם ❤️ על ידי הקהילה</p>
+            <p style="margin-top: 20px; opacity: 0.8; font-size: 0.9em;">
+                זכרו: כוח רב מגיע עם אחריות רבה. השתמשו בבוט באחריות ובצורה אתית.
+            </p>
+        </footer>
+    </div>
+</body>
+</html>
