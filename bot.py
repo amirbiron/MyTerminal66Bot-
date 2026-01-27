@@ -8,14 +8,12 @@ import json
 import time
 import socket
 import asyncio
-import tempfile
 import textwrap
 import subprocess
 import zipfile  # נשאר אם תרצה להשתמש בהמשך
 import io
 import traceback
 import contextlib
-import unicodedata
 import re
 import hashlib
 import secrets
@@ -28,81 +26,47 @@ from telegram import Update, InlineQueryResultArticle, InputTextMessageContent, 
 from telegram.ext import Application, CommandHandler, ContextTypes, InlineQueryHandler, CallbackQueryHandler, ChosenInlineResultHandler, MessageHandler, filters
 from telegram.error import NetworkError, TimedOut, Conflict, BadRequest
 
-# ==== תצורה ====
-def _parse_owner_ids(raw: str | None) -> set[int]:
-    if not raw:
-        return set()
-    parts = [p.strip() for p in raw.replace("\n", ",").split(",")]
-    owners: set[int] = set()
-    for p in parts:
-        if not p:
-            continue
-        try:
-            owners.add(int(p))
-        except ValueError:
-            continue
-    return owners
+# Import shared utilities
+from shared_utils import (
+    DEFAULT_OWNER_ID,
+    parse_owner_ids,
+    load_allowed_cmds,
+    save_allowed_cmds,
+    normalize_code,
+    truncate as _truncate_base,
+    is_safe_pip_name,
+    exec_python_in_context,
+    run_js_blocking,
+    run_java_blocking,
+    run_shell_blocking,
+    resolve_path,
+    handle_builtins,
+)
 
-OWNER_IDS = _parse_owner_ids(os.getenv("OWNER_ID", "6865105071"))
+# ==== תצורה ====
+OWNER_IDS = parse_owner_ids(os.getenv("OWNER_ID", DEFAULT_OWNER_ID))
 TIMEOUT = int(os.getenv("CMD_TIMEOUT", "60"))
 PIP_TIMEOUT = int(os.getenv("PIP_TIMEOUT", "120"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
 TG_MAX_MESSAGE = int(os.getenv("TG_MAX_MESSAGE", "4000"))
 RESTART_NOTIFY_PATH = os.getenv("RESTART_NOTIFY_PATH", "/tmp/bot_restart_notify.json")
 
-def _parse_cmds_string(value: str) -> set:
-    """Parses comma/newline separated command names into a set, trimming blanks."""
-    if not value:
-        return set()
-    tokens = []
-    # Support both comma and newline separated formats
-    for part in value.replace("\r", "").replace("\n", ",").split(","):
-        tok = part.strip()
-        if tok:
-            tokens.append(tok)
-    return set(tokens)
-
-
-DEFAULT_ALLOWED_CMDS = _parse_cmds_string(
-    os.getenv("ALLOWED_CMDS")
-    or "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env,git,python,python3,pip,pip3,poetry,uv,pytest,go,rustc,cargo,node,npm,npx,tsc,deno,zip,unzip,7z,tar,tee,yes,xargs,printf,kill,killall,bash,sh,chmod,chown,chgrp,df,du,make,gcc,g++,javac,java,ssh,scp"
-)
-
-# In-memory allowlist. Will be overridden from file if present.
-ALLOWED_CMDS = set(DEFAULT_ALLOWED_CMDS)
+# In-memory allowlist - loaded from shared_utils
+ALLOWED_CMDS = load_allowed_cmds()
 
 ALLOW_ALL_COMMANDS = os.getenv("ALLOW_ALL_COMMANDS", "").lower() in ("1", "true", "yes", "on")
 SHELL_EXECUTABLE = os.getenv("SHELL_EXECUTABLE") or ("/bin/bash" if os.path.exists("/bin/bash") else None)
-ALLOWED_CMDS_FILE = os.getenv("ALLOWED_CMDS_FILE", "allowed_cmds.txt")
-
-
-def _serialize_cmds(cmds: set) -> str:
-    # Persist one-per-line for readability
-    return "\n".join(sorted(cmds))
 
 
 def load_allowed_cmds_from_file() -> None:
     """Load allowed commands from file if it exists; otherwise keep current (env/default)."""
     global ALLOWED_CMDS
-    try:
-        if os.path.exists(ALLOWED_CMDS_FILE):
-            with open(ALLOWED_CMDS_FILE, "r", encoding="utf-8") as fh:
-                content = fh.read()
-            parsed = _parse_cmds_string(content)
-            # If file exists but empty, treat as empty allowlist
-            ALLOWED_CMDS = set(parsed)
-    except Exception:
-        # If load fails, keep existing in-memory allowlist
-        pass
+    ALLOWED_CMDS = load_allowed_cmds()
 
 
 def save_allowed_cmds_to_file() -> None:
-    try:
-        with open(ALLOWED_CMDS_FILE, "w", encoding="utf-8") as fh:
-            fh.write(_serialize_cmds(ALLOWED_CMDS))
-    except Exception:
-        # Do not crash on persistence issues
-        pass
+    """Save allowed commands to file."""
+    save_allowed_cmds(ALLOWED_CMDS)
 
 # ==== Reporter ====
 reporter = create_reporter(
@@ -156,24 +120,14 @@ def _get_inline_session(session_key: str):
 def exec_python_in_shared_context(src: str, context_key: int):
     """הרצת קוד פייתון בהקשר משותף לפי מזהה (למשל user_id).
     מחזיר (stdout, stderr, traceback_text | None)
+    Uses shared_utils.exec_python_in_context internally.
     """
     global PY_CONTEXT
     ctx = PY_CONTEXT.get(context_key)
     if ctx is None:
         ctx = {"__builtins__": __builtins__, "__name__": "__main__"}
-    else:
-        # ודא ש-__name__ קיים למען קוד עם if __name__ == "__main__"
-        ctx.setdefault("__name__", "__main__")
         PY_CONTEXT[context_key] = ctx
-    stdout_buffer = io.StringIO()
-    stderr_buffer = io.StringIO()
-    tb_text = None
-    try:
-        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-            exec(src, ctx, ctx)
-    except Exception:
-        tb_text = traceback.format_exc()
-    return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
+    return exec_python_in_context(src, ctx)
 
 
 def _trim_for_message(text: str) -> str:
@@ -181,96 +135,6 @@ def _trim_for_message(text: str) -> str:
     if len(text) > TG_MAX_MESSAGE:
         return text[:TG_MAX_MESSAGE]
     return text
-def _run_shell_blocking(shell_exec: str, q: str, cwd: str, env: dict, timeout_sec: int):
-    """מריץ פקודת shell בצורה חסימתית (להרצה בתוך ת׳רד)."""
-    return subprocess.run(
-        [shell_exec, "-c", q],
-        capture_output=True,
-        text=True,
-        timeout=timeout_sec,
-        cwd=cwd,
-        env=env,
-    )
-
-
-def _run_js_blocking(src: str, cwd: str, env: dict, timeout_sec: int):
-    """מריץ קוד JS באמצעות node על קובץ זמני (להרצה בתוך ת׳רד)."""
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".js", encoding="utf-8") as tf:
-            tf.write(src)
-            tmp_path = tf.name
-        return subprocess.run(
-            ["node", tmp_path],
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            cwd=cwd,
-            env=env,
-        )
-    finally:
-        try:
-            if tmp_path and os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except Exception:
-            pass
-
-
-def _run_java_blocking(src: str, cwd: str, env: dict, timeout_sec: int):
-    """מריץ קוד Java באמצעות javac+java על קובץ זמני (להרצה בתוך ת׳רד).
-    מחפש class ציבורי בקוד כדי לקבוע את שם הקובץ, או משתמש ב-Main כברירת מחדל.
-    """
-    tmp_dir = None
-    try:
-        # יצירת תיקייה זמנית לקומפילציה
-        tmp_dir = tempfile.mkdtemp()
-        
-        # חיפוש class ציבורי כדי לקבוע שם קובץ
-        # תומך גם ב-modifiers כמו: public final class, public abstract class וכו'
-        class_name = "Main"
-        try:
-            match = re.search(r'public\s+(?:final\s+|abstract\s+|static\s+)*class\s+(\w+)', src)
-            if match:
-                class_name = match.group(1)
-        except Exception:
-            pass
-        
-        # כתיבת הקוד לקובץ
-        java_file = os.path.join(tmp_dir, f"{class_name}.java")
-        with open(java_file, "w", encoding="utf-8") as f:
-            f.write(src)
-        
-        # קומפילציה
-        compile_proc = subprocess.run(
-            ["javac", java_file],
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            cwd=tmp_dir,
-            env=env,
-        )
-        
-        if compile_proc.returncode != 0:
-            # אם הקומפילציה נכשלה, נחזיר את תהליך הקומפילציה
-            return compile_proc
-        
-        # הרצה
-        return subprocess.run(
-            ["java", class_name],
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            cwd=tmp_dir,
-            env=env,
-        )
-    finally:
-        # ניקוי הקבצים הזמניים
-        try:
-            if tmp_dir and os.path.exists(tmp_dir):
-                import shutil
-                shutil.rmtree(tmp_dir)
-        except Exception:
-            pass
 
 
 def _make_refresh_markup(token: str) -> InlineKeyboardMarkup:
@@ -362,46 +226,13 @@ def report_nowait(user_id: int) -> None:
             pass
 
 def truncate(s: str) -> str:
-    s = (s or "").strip()
-    if not s:
-        return "(no output)"
-    if len(s) <= MAX_OUTPUT:
-        return s
-    return s[:MAX_OUTPUT] + f"\n\n…[truncated {len(s) - MAX_OUTPUT} chars]"
+    """Truncate output to MAX_OUTPUT characters. Uses shared_utils."""
+    return _truncate_base(s, MAX_OUTPUT)
 
 
-def normalize_code(text: str) -> str:
-    """ניקוי תווים נסתרים, גרשיים חכמים, NBSP וכד'.
-    - ממיר גרשיים חכמים לגרשיים רגילים
-    - ממיר NBSP ותווים דומים לרווח רגיל
-    - מנרמל יוניקוד ל-NFKC
-    - מחליף \r\n ל-\n
-    """
-    if not text:
-        return ""
-    # נירמול יוניקוד כללי
-    text = unicodedata.normalize("NFKC", text)
-    # המרות גרשיים חכמים
-    text = text.replace("“", '"').replace("”", '"').replace("„", '"')
-    text = text.replace("‘", "'").replace("’", "'")
-    # NBSP וקרובים
-    text = text.replace("\u00A0", " ").replace("\u202F", " ")
-    # סימני כיוון בלתי נראים
-    text = text.replace("\u200E", "").replace("\u200F", "")
-    # קו מפריד רך -> רגיל
-    text = text.replace("\u00AD", "")
-    # CRLF ל-LF
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # הסרת גדרות קוד מרקדאון ```lang ... ```
-    try:
-        text = re.sub(r"(?m)^\s*```[a-zA-Z0-9_+\-]*\s*$", "", text)
-        text = re.sub(r"(?m)^\s*```\s*$", "", text)
-    except Exception:
-        pass
-    return text
+# normalize_code is imported from shared_utils
 
-
-SAFE_PIP_NAME_RE = re.compile(r'^(?![.-])[a-zA-Z0-9_.-]+$')
+# is_safe_pip_name is imported from shared_utils
 
 
 def install_package(package: str):
@@ -424,13 +255,7 @@ def get_session(update: Update):
     return sess
 
 
-def _resolve_path(base_cwd: str, target: str) -> str:
-    if target == "-":
-        return base_cwd
-    p = os.path.expanduser(target)
-    if not os.path.isabs(p):
-        p = os.path.abspath(os.path.join(base_cwd, p))
-    return p
+# _resolve_path is imported from shared_utils as resolve_path
 
 
 async def send_output(update: Update, text: str, filename: str = "output.txt"):
@@ -480,59 +305,7 @@ async def send_output(update: Update, text: str, filename: str = "output.txt"):
 # Load allowlist from file at import time (fallback to ENV/default already set)
 load_allowed_cmds_from_file()
 
-
-def handle_builtins(sess, cmdline: str):
-    """
-    תומך בפקודות cd/export/unset אם הפקודה פשוטה (ללא ; || && | \n).
-    אם טופל – מחזיר מחרוזת תגובה. אם לא – None.
-    """
-    if any(x in cmdline for x in (";", "&&", "||", "|", "\n")):
-        return None
-    try:
-        parts = shlex.split(cmdline, posix=True)
-    except ValueError:
-        return "❗ שגיאת פרסינג"
-    if not parts:
-        return "❗ אין פקודה"
-
-    cmd = parts[0]
-
-    if cmd == "cd":
-        target = parts[1] if len(parts) > 1 else (sess["env"].get("HOME") or os.path.expanduser("~"))
-        new_path = _resolve_path(sess["cwd"], target)
-        if os.path.isdir(new_path):
-            sess["cwd"] = new_path
-            return f"📁 cwd: {new_path}"
-        return f"❌ תיקייה לא נמצאה: {target}"
-
-    if cmd == "export":
-        # export A=1 B=2 ; export A ; export (לרשימת כל המשתנים)
-        if len(parts) == 1:
-            return "\n".join([f"PWD={sess['cwd']}"] + [f"{k}={v}" for k, v in sorted(sess["env"].items())])
-        out_lines = []
-        for tok in parts[1:]:
-            if "=" not in tok:
-                val = sess["env"].get(tok)
-                out_lines.append(f"{tok}={val if val is not None else ''}")
-                continue
-            k, v = tok.split("=", 1)
-            sess["env"][k] = v
-            out_lines.append(f"set {k}={v}")
-        return "\n".join(out_lines)
-
-    if cmd == "unset":
-        if len(parts) == 1:
-            return "❗ שימוש: unset VAR [VAR2 ...]"
-        out_lines = []
-        for tok in parts[1:]:
-            if tok in sess["env"]:
-                sess["env"].pop(tok, None)
-                out_lines.append(f"unset {tok}")
-            else:
-                out_lines.append(f"{tok} לא מוגדר")
-        return "\n".join(out_lines)
-
-    return None
+# handle_builtins is imported from shared_utils
 
 
 # ==== lifecycle ====
@@ -653,9 +426,118 @@ async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
             "/py_run → הרצת כל ההודעות שנאספו\n"
             "/js <קוד JS>\n"
             "/java <קוד Java>\n"
+            "/webapp → פתיחת ממשק Web App\n"
             "/health\n/restart\n/env\n/reset\n/clear\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n"
             "(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)"
         )
+    
+    # הצגת כפתורים למשתמש מורשה
+    buttons = _get_welcome_buttons()
+    await update.message.reply_text(
+        _get_welcome_text(),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
+    )
+
+
+async def webapp_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """פותח את ממשק ה-Web App."""
+    report_nowait(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return await update.message.reply_text("❌ אין הרשאה")
+    
+    webapp_url = os.getenv("WEBAPP_URL", "")
+    if not webapp_url:
+        return await update.message.reply_text(
+            "❗ Web App לא מוגדר.\n\n"
+            "כדי להפעיל:\n"
+            "1. הרץ את webapp_server.py\n"
+            "2. קבע WEBAPP_URL למשל: https://your-domain.com\n"
+            "3. הגדר את ה-Web App ב-@BotFather"
+        )
+    
+    from telegram import WebAppInfo
+    await update.message.reply_text(
+        "🖥️ לחץ על הכפתור לפתיחת Terminal Web App:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("פתח Web App 🚀", web_app=WebAppInfo(url=webapp_url))]
+        ])
+    )
+
+
+def _get_welcome_text() -> str:
+    """מחזיר את טקסט הפתיחה."""
+    return (
+        "🤖 <b>Terminal Bot</b>\n\n"
+        "פקודות זמינות:\n"
+        "• /sh <פקודה> - הרצת Shell\n"
+        "• /py <קוד> - הרצת Python\n"
+        "• /js <קוד> - הרצת JavaScript\n"
+        "• /java <קוד> - הרצת Java\n"
+        "• /webapp - פתיחת ממשק גרפי\n\n"
+        "לעזרה נוספת: /help"
+    )
+
+
+def _get_welcome_buttons() -> list:
+    """מחזיר את כפתורי הפתיחה."""
+    from telegram import WebAppInfo
+    webapp_url = os.getenv("WEBAPP_URL", "")
+    buttons = []
+    
+    if webapp_url:
+        buttons.append([InlineKeyboardButton("🖥️ פתח Web App", web_app=WebAppInfo(url=webapp_url))])
+    
+    buttons.append([InlineKeyboardButton("📋 רשימת פקודות", callback_data="show_commands")])
+    return buttons
+
+
+async def show_commands_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """מציג רשימת פקודות מפורטת."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "📋 <b>רשימת פקודות מלאה:</b>\n\n"
+        "<b>הרצת קוד:</b>\n"
+        "• /sh <פקודה> - Shell/Bash\n"
+        "• /py <קוד> - Python\n"
+        "• /js <קוד> - JavaScript (Node.js)\n"
+        "• /java <קוד> - Java\n"
+        "• /call <פונקציה> - קריאה לפונקציה מוגדרת\n\n"
+        "<b>קוד רב-שורות:</b>\n"
+        "• /py_start - התחלת איסוף\n"
+        "• /py_run - הרצת הקוד שנאסף\n\n"
+        "<b>ניהול סשן:</b>\n"
+        "• /env - הצגת משתני סביבה\n"
+        "• /reset - איפוס cwd/env\n"
+        "• /clear - ניקוי מלא של הסשן\n\n"
+        "<b>ניהול הרשאות (בעלים בלבד):</b>\n"
+        "• /list - רשימת פקודות מאושרות\n"
+        "• /allow <cmd> - הוספת פקודה\n"
+        "• /deny <cmd> - הסרת פקודה\n"
+        "• /update <cmds> - עדכון הרשימה\n\n"
+        "<b>אחר:</b>\n"
+        "• /webapp - ממשק גרפי\n"
+        "• /health - בדיקת תקינות\n"
+        "• /whoami - הצגת ה-ID שלך\n"
+        "• /restart - הפעלה מחדש",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("חזרה ◀️", callback_data="back_to_start")]
+        ])
+    )
+
+
+async def back_to_start_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """חזרה למסך הפתיחה."""
+    query = update.callback_query
+    await query.answer()
+    buttons = _get_welcome_buttons()
+    await query.edit_message_text(
+        _get_welcome_text(),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
+    )
 
 
 async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -941,7 +823,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             cleaned = normalize_code(cleaned).strip("\n") + "\n"
             try:
                 sess = _get_inline_session(str(user_id))
-                p = await asyncio.to_thread(_run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+                p = await asyncio.to_thread(run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
                 out = (p.stdout or "").rstrip()
                 err = (p.stderr or "").rstrip()
                 parts_out = [cleaned.rstrip() + "\n\n"]
@@ -961,7 +843,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             cleaned = normalize_code(cleaned).strip("\n") + "\n"
             try:
                 sess = _get_inline_session(str(user_id))
-                p = await asyncio.to_thread(_run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+                p = await asyncio.to_thread(run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
                 out = (p.stdout or "").rstrip()
                 err = (p.stderr or "").rstrip()
                 parts_out = [cleaned.rstrip() + "\n\n"]
@@ -1149,7 +1031,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
             sess = _get_inline_session(str(user_id))
             try:
                 shell_exec = SHELL_EXECUTABLE or "/bin/bash"
-                p = await asyncio.to_thread(_run_shell_blocking, shell_exec, q, sess["cwd"], sess["env"], TIMEOUT)
+                p = await asyncio.to_thread(run_shell_blocking, shell_exec, q, sess["cwd"], sess["env"], TIMEOUT)
                 out = p.stdout or ""
                 err = p.stderr or ""
                 header = f"$ {q}\n\n"
@@ -1183,7 +1065,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         cleaned = normalize_code(cleaned).strip("\n") + "\n"
         try:
             sess = _get_inline_session(str(user_id))
-            p = await asyncio.to_thread(_run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+            p = await asyncio.to_thread(run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
             out = (p.stdout or "").rstrip()
             err = (p.stderr or "").rstrip()
             parts_out = [cleaned.rstrip() + "\n\n"]
@@ -1203,7 +1085,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         cleaned = normalize_code(cleaned).strip("\n") + "\n"
         try:
             sess = _get_inline_session(str(user_id))
-            p = await asyncio.to_thread(_run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+            p = await asyncio.to_thread(run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
             out = (p.stdout or "").rstrip()
             err = (p.stderr or "").rstrip()
             parts_out = [cleaned.rstrip() + "\n\n"]
@@ -1419,7 +1301,7 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
             if not m:
                 break
             missing_mod = m.group(1)
-            if not SAFE_PIP_NAME_RE.match(missing_mod):
+            if not is_safe_pip_name(missing_mod):
                 await update.message.reply_text(f"❌ שם מודול לא תקין להתקנה: '{missing_mod}'")
                 break
             try:
@@ -1490,7 +1372,7 @@ async def js_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     sess = get_session(update)
 
     try:
-        p = await asyncio.to_thread(_run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+        p = await asyncio.to_thread(run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
         out = (p.stdout or "").rstrip()
         err = (p.stderr or "").rstrip()
         parts = [cleaned.rstrip() + "\n\n"]
@@ -1524,7 +1406,7 @@ async def java_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     sess = get_session(update)
 
     try:
-        p = await asyncio.to_thread(_run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+        p = await asyncio.to_thread(run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
         out = (p.stdout or "").rstrip()
         err = (p.stderr or "").rstrip()
         parts = [cleaned.rstrip() + "\n\n"]
@@ -1723,7 +1605,7 @@ async def py_run_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
             if not m:
                 break
             missing_mod = m.group(1)
-            if not SAFE_PIP_NAME_RE.match(missing_mod):
+            if not is_safe_pip_name(missing_mod):
                 await update.message.reply_text(f"❌ שם מודול לא תקין להתקנה: '{missing_mod}'")
                 break
             try:
@@ -1940,8 +1822,11 @@ def main():
         app.add_handler(InlineQueryHandler(inline_query))
         app.add_handler(ChosenInlineResultHandler(on_chosen_inline_result))
         app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^refresh:"))
+        app.add_handler(CallbackQueryHandler(show_commands_callback, pattern=r"^show_commands$"))
+        app.add_handler(CallbackQueryHandler(back_to_start_callback, pattern=r"^back_to_start$"))
         # קלטים בסיסיים
         app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("webapp", webapp_cmd))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
         app.add_handler(CommandHandler("js", js_cmd))

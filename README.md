@@ -52,3 +52,67 @@ docker run --rm -e BOT_TOKEN="$BOT_TOKEN" -e OWNER_ID="$OWNER_ID" \
 ```
 
 הדימוי מבוסס על `python:3.11-slim` ומותקנות בו מראש ספריות נפוצות (numpy, matplotlib, pygame) כך שקוד עם `import` יעבוד ללא שגיאות.
+
+## Web App - ממשק גרפי
+
+הבוט כולל ממשק Web App של טלגרם לחוויית משתמש משופרת.
+
+### הרצה מקומית
+
+```bash
+# הרצת שרת ה-Web App בלבד
+python run_all.py --web-only
+
+# הרצת הבוט והשרת יחד
+python run_all.py
+
+# או בנפרד
+python webapp_server.py &
+python bot.py
+```
+
+### הגדרת Web App בטלגרם
+
+1. פתח @BotFather ובחר את הבוט שלך
+2. שלח `/setmenubutton`
+3. בחר את הבוט והגדר URL לכפתור (למשל: `https://your-domain.com`)
+4. קבע את משתנה הסביבה `WEBAPP_URL` לאותו URL
+
+### הרצה עם Docker (בוט + Web App)
+
+```bash
+# הרצה עם שני השירותים
+docker run --rm -p 8080:8080 \
+  -e BOT_TOKEN="$BOT_TOKEN" \
+  -e OWNER_ID="$OWNER_ID" \
+  -e WEBAPP_URL="https://your-domain.com" \
+  --name myterminal66bot myterminal66bot:py311 \
+  python run_all.py
+```
+
+### הרצה בפרודקשן עם Gunicorn
+
+```bash
+gunicorn -w 4 -b 0.0.0.0:8080 webapp_server:app
+```
+
+### משתני סביבה ל-Web App
+
+| משתנה | תיאור | ברירת מחדל |
+|-------|--------|------------|
+| `WEBAPP_URL` | URL של ה-Web App (לכפתור בבוט) | - |
+| `WEBAPP_PORT` | פורט לשרת ה-Web | 8080 |
+| `WEBAPP_HOST` | כתובת לשרת ה-Web | 0.0.0.0 |
+| `FLASK_DEBUG` | מצב Debug של Flask | false |
+
+### מבנה קבצים
+
+```
+webapp/
+  index.html      # דף ראשי
+  static/
+    style.css     # עיצוב
+    app.js        # לוגיקה
+webapp_server.py  # שרת Flask + API
+run_all.py        # סקריפט להרצת הכל
+```
