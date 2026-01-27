@@ -653,9 +653,119 @@ async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
             "/py_run → הרצת כל ההודעות שנאספו\n"
             "/js <קוד JS>\n"
             "/java <קוד Java>\n"
+            "/webapp → פתיחת ממשק Web App\n"
             "/health\n/restart\n/env\n/reset\n/clear\n/allow,/deny,/list,/update (מנהלי הרשאות לבעלים בלבד)\n"
             "(תמיכה ב-cd/export/unset, ושמירת cwd/env לסשן)"
         )
+    
+    # הצגת כפתורים למשתמש מורשה
+    webapp_url = os.getenv("WEBAPP_URL", "")
+    buttons = []
+    
+    if webapp_url:
+        from telegram import WebAppInfo
+        buttons.append([InlineKeyboardButton("🖥️ פתח Web App", web_app=WebAppInfo(url=webapp_url))])
+    
+    buttons.append([InlineKeyboardButton("📋 רשימת פקודות", callback_data="show_commands")])
+    
+    await update.message.reply_text(
+        "🤖 <b>Terminal Bot</b>\n\n"
+        "פקודות זמינות:\n"
+        "• /sh <פקודה> - הרצת Shell\n"
+        "• /py <קוד> - הרצת Python\n"
+        "• /js <קוד> - הרצת JavaScript\n"
+        "• /java <קוד> - הרצת Java\n"
+        "• /webapp - פתיחת ממשק גרפי\n\n"
+        "לעזרה נוספת: /help",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
+    )
+
+
+async def webapp_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    """פותח את ממשק ה-Web App."""
+    report_nowait(update.effective_user.id if update.effective_user else 0)
+    if not allowed(update):
+        return await update.message.reply_text("❌ אין הרשאה")
+    
+    webapp_url = os.getenv("WEBAPP_URL", "")
+    if not webapp_url:
+        return await update.message.reply_text(
+            "❗ Web App לא מוגדר.\n\n"
+            "כדי להפעיל:\n"
+            "1. הרץ את webapp_server.py\n"
+            "2. קבע WEBAPP_URL למשל: https://your-domain.com\n"
+            "3. הגדר את ה-Web App ב-@BotFather"
+        )
+    
+    from telegram import WebAppInfo
+    await update.message.reply_text(
+        "🖥️ לחץ על הכפתור לפתיחת Terminal Web App:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("פתח Web App 🚀", web_app=WebAppInfo(url=webapp_url))]
+        ])
+    )
+
+
+async def show_commands_callback(client, callback_query):
+    """מציג רשימת פקודות מפורטת."""
+    await callback_query.answer()
+    await callback_query.edit_message_text(
+        "📋 <b>רשימת פקודות מלאה:</b>\n\n"
+        "<b>הרצת קוד:</b>\n"
+        "• /sh <פקודה> - Shell/Bash\n"
+        "• /py <קוד> - Python\n"
+        "• /js <קוד> - JavaScript (Node.js)\n"
+        "• /java <קוד> - Java\n"
+        "• /call <פונקציה> - קריאה לפונקציה מוגדרת\n\n"
+        "<b>קוד רב-שורות:</b>\n"
+        "• /py_start - התחלת איסוף\n"
+        "• /py_run - הרצת הקוד שנאסף\n\n"
+        "<b>ניהול סשן:</b>\n"
+        "• /env - הצגת משתני סביבה\n"
+        "• /reset - איפוס cwd/env\n"
+        "• /clear - ניקוי מלא של הסשן\n\n"
+        "<b>ניהול הרשאות (בעלים בלבד):</b>\n"
+        "• /list - רשימת פקודות מאושרות\n"
+        "• /allow <cmd> - הוספת פקודה\n"
+        "• /deny <cmd> - הסרת פקודה\n"
+        "• /update <cmds> - עדכון הרשימה\n\n"
+        "<b>אחר:</b>\n"
+        "• /webapp - ממשק גרפי\n"
+        "• /health - בדיקת תקינות\n"
+        "• /whoami - הצגת ה-ID שלך\n"
+        "• /restart - הפעלה מחדש",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("חזרה ◀️", callback_data="back_to_start")]
+        ])
+    )
+
+
+async def back_to_start_callback(client, callback_query):
+    """חזרה למסך הפתיחה."""
+    await callback_query.answer()
+    webapp_url = os.getenv("WEBAPP_URL", "")
+    buttons = []
+    
+    if webapp_url:
+        from telegram import WebAppInfo
+        buttons.append([InlineKeyboardButton("🖥️ פתח Web App", web_app=WebAppInfo(url=webapp_url))])
+    
+    buttons.append([InlineKeyboardButton("📋 רשימת פקודות", callback_data="show_commands")])
+    
+    await callback_query.edit_message_text(
+        "🤖 <b>Terminal Bot</b>\n\n"
+        "פקודות זמינות:\n"
+        "• /sh <פקודה> - הרצת Shell\n"
+        "• /py <קוד> - הרצת Python\n"
+        "• /js <קוד> - הרצת JavaScript\n"
+        "• /java <קוד> - הרצת Java\n"
+        "• /webapp - פתיחת ממשק גרפי\n\n"
+        "לעזרה נוספת: /help",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
+    )
 
 
 async def inline_query(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -1940,8 +2050,11 @@ def main():
         app.add_handler(InlineQueryHandler(inline_query))
         app.add_handler(ChosenInlineResultHandler(on_chosen_inline_result))
         app.add_handler(CallbackQueryHandler(handle_refresh_callback, pattern=r"^refresh:"))
+        app.add_handler(CallbackQueryHandler(show_commands_callback, pattern=r"^show_commands$"))
+        app.add_handler(CallbackQueryHandler(back_to_start_callback, pattern=r"^back_to_start$"))
         # קלטים בסיסיים
         app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("webapp", webapp_cmd))
         app.add_handler(CommandHandler("sh", sh_cmd))
         app.add_handler(CommandHandler("py", py_cmd))
         app.add_handler(CommandHandler("js", js_cmd))

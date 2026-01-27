@@ -52,5 +52,14 @@ RUN pip install --no-cache-dir -U pip setuptools wheel \
 # Copy source
 COPY . /app
 
+# Expose web app port
+EXPOSE 8080
+
+# Default: run bot only. Use run_all.py for both bot and web app
 CMD ["python", "bot.py"]
+
+# Alternative commands:
+# Run both bot and web app: CMD ["python", "run_all.py"]
+# Run web app only: CMD ["python", "run_all.py", "--web-only"]
+# Run with gunicorn: CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8080", "webapp_server:app"]
 
