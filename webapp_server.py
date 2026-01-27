@@ -5,16 +5,21 @@ Telegram Web App Server - Terminal Interface
 
 שרת Flask שמספק ממשק Web App לטרמינל של הבוט.
 תומך בהרצת פקודות shell, Python, JS ו-Java.
+כולל טרמינל PTY אינטראקטיבי דרך WebSocket.
 """
 
 import os
 import sys
 import io
 import re
+import pty
 import json
 import time
 import hmac
 import shlex
+import struct
+import select
+import signal
 import hashlib
 import textwrap
 import traceback
@@ -22,10 +27,11 @@ import subprocess
 import contextlib
 from functools import wraps
 from urllib.parse import parse_qsl, unquote
-from threading import Lock
+from threading import Lock, Thread
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from flask import Flask, request, jsonify, send_from_directory
+from flask_sock import Sock
 
 # Import shared utilities
 from shared_utils import (
@@ -69,6 +75,11 @@ executor = ThreadPoolExecutor(max_workers=4)
 
 # Flask app
 app = Flask(__name__, static_folder="webapp/static")
+sock = Sock(app)
+
+# PTY sessions per user_id
+pty_sessions = {}
+pty_sessions_lock = Lock()
 
 
 # ==== Helpers ====
@@ -427,6 +438,273 @@ def list_commands():
         "commands": sorted(ALLOWED_CMDS),
         "allow_all": ALLOW_ALL_COMMANDS,
     })
+
+
+# ==== PTY WebSocket Terminal ====
+
+def validate_ws_auth(ws) -> int | None:
+    """
+    Validate WebSocket authentication.
+    Returns user_id if valid, None otherwise.
+    """
+    # Try to get init_data from first message or subprotocol
+    if not BOT_TOKEN:
+        if DEV_MODE:
+            return 0  # Development mode
+        return None
+    
+    try:
+        # Wait for auth message (first message should be auth)
+        auth_msg = ws.receive(timeout=5)
+        if not auth_msg:
+            return None
+        
+        auth_data = json.loads(auth_msg)
+        if auth_data.get("type") != "auth":
+            return None
+        
+        init_data = auth_data.get("init_data", "")
+        data = validate_telegram_webapp_data(init_data)
+        if not data:
+            return None
+        
+        user = data.get("user", {})
+        user_id = user.get("id", 0)
+        
+        if user_id not in OWNER_IDS:
+            return None
+        
+        return user_id
+    except Exception:
+        return None
+
+
+def get_pty_session(user_id: int) -> dict | None:
+    """Get existing PTY session for user."""
+    with pty_sessions_lock:
+        return pty_sessions.get(user_id)
+
+
+def create_pty_session(user_id: int) -> dict:
+    """Create a new PTY session for user."""
+    # Get shell
+    shell = SHELL_EXECUTABLE or os.environ.get("SHELL", "/bin/bash")
+    
+    # Get user session for cwd/env
+    sess = get_session(user_id)
+    
+    # Create PTY
+    master_fd, slave_fd = pty.openpty()
+    
+    # Fork process
+    pid = os.fork()
+    
+    if pid == 0:
+        # Child process
+        os.close(master_fd)
+        os.setsid()
+        
+        # Set controlling terminal
+        import fcntl
+        fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+        
+        # Duplicate slave to stdin/stdout/stderr
+        os.dup2(slave_fd, 0)
+        os.dup2(slave_fd, 1)
+        os.dup2(slave_fd, 2)
+        
+        if slave_fd > 2:
+            os.close(slave_fd)
+        
+        # Change to session cwd
+        try:
+            os.chdir(sess["cwd"])
+        except Exception:
+            pass
+        
+        # Set environment
+        env = sess["env"].copy()
+        env["TERM"] = "xterm-256color"
+        env["COLORTERM"] = "truecolor"
+        
+        # Execute shell
+        os.execvpe(shell, [shell], env)
+    
+    else:
+        # Parent process
+        os.close(slave_fd)
+        
+        pty_session = {
+            "master_fd": master_fd,
+            "pid": pid,
+            "created_at": time.time(),
+        }
+        
+        with pty_sessions_lock:
+            # Close existing session if any
+            if user_id in pty_sessions:
+                close_pty_session(user_id)
+            pty_sessions[user_id] = pty_session
+        
+        return pty_session
+
+
+def close_pty_session(user_id: int):
+    """Close PTY session for user."""
+    with pty_sessions_lock:
+        session = pty_sessions.pop(user_id, None)
+    
+    if session:
+        try:
+            os.close(session["master_fd"])
+        except Exception:
+            pass
+        
+        try:
+            os.kill(session["pid"], signal.SIGTERM)
+            # Give it time to terminate gracefully
+            time.sleep(0.1)
+            os.kill(session["pid"], signal.SIGKILL)
+        except Exception:
+            pass
+        
+        try:
+            os.waitpid(session["pid"], os.WNOHANG)
+        except Exception:
+            pass
+
+
+def resize_pty(master_fd: int, rows: int, cols: int):
+    """Resize PTY window."""
+    try:
+        import fcntl
+        import termios
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+    except Exception:
+        pass
+
+
+# Import termios for PTY operations
+try:
+    import termios
+    import fcntl
+    PTY_AVAILABLE = True
+except ImportError:
+    PTY_AVAILABLE = False
+
+
+@sock.route("/ws/terminal")
+def ws_terminal(ws):
+    """WebSocket endpoint for interactive PTY terminal."""
+    if not PTY_AVAILABLE:
+        ws.send(json.dumps({
+            "type": "error",
+            "message": "PTY not available on this system"
+        }))
+        return
+    
+    # Authenticate
+    user_id = validate_ws_auth(ws)
+    if user_id is None:
+        ws.send(json.dumps({
+            "type": "error",
+            "message": "Authentication failed"
+        }))
+        return
+    
+    # Send auth success
+    ws.send(json.dumps({"type": "auth_ok", "user_id": user_id}))
+    
+    # Create PTY session
+    try:
+        pty_session = create_pty_session(user_id)
+    except Exception as e:
+        ws.send(json.dumps({
+            "type": "error",
+            "message": f"Failed to create PTY: {str(e)}"
+        }))
+        return
+    
+    master_fd = pty_session["master_fd"]
+    
+    # Set non-blocking mode
+    import fcntl
+    flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+    fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    
+    # Read from PTY and send to WebSocket
+    def read_pty():
+        while True:
+            try:
+                readable, _, _ = select.select([master_fd], [], [], 0.1)
+                if master_fd in readable:
+                    try:
+                        data = os.read(master_fd, 4096)
+                        if data:
+                            ws.send(json.dumps({
+                                "type": "output",
+                                "data": data.decode("utf-8", errors="replace")
+                            }))
+                        else:
+                            # EOF
+                            ws.send(json.dumps({"type": "exit"}))
+                            break
+                    except OSError:
+                        ws.send(json.dumps({"type": "exit"}))
+                        break
+            except Exception:
+                break
+    
+    # Start PTY reader thread
+    reader_thread = Thread(target=read_pty, daemon=True)
+    reader_thread.start()
+    
+    # Main loop - receive from WebSocket and write to PTY
+    try:
+        while True:
+            msg = ws.receive()
+            if msg is None:
+                break
+            
+            try:
+                data = json.loads(msg)
+                msg_type = data.get("type")
+                
+                if msg_type == "input":
+                    # Write input to PTY
+                    input_data = data.get("data", "")
+                    if input_data:
+                        os.write(master_fd, input_data.encode("utf-8"))
+                
+                elif msg_type == "resize":
+                    # Resize PTY
+                    rows = data.get("rows", 24)
+                    cols = data.get("cols", 80)
+                    resize_pty(master_fd, rows, cols)
+                
+                elif msg_type == "ping":
+                    ws.send(json.dumps({"type": "pong"}))
+                
+            except json.JSONDecodeError:
+                # Treat as raw input
+                os.write(master_fd, msg.encode("utf-8"))
+    
+    except Exception:
+        pass
+    
+    finally:
+        # Cleanup
+        close_pty_session(user_id)
+
+
+@app.route("/api/pty/close", methods=["POST"])
+@require_auth
+def close_pty():
+    """Close PTY session for current user."""
+    user_id = getattr(request, "user_id", 0)
+    close_pty_session(user_id)
+    return jsonify({"status": "ok", "message": "PTY session closed"})
 
 
 # ==== Run ====
