@@ -10,6 +10,7 @@ bot.py and webapp_server.py to avoid code duplication.
 import os
 import re
 import io
+import shlex
 import tempfile
 import textwrap
 import traceback
@@ -268,3 +269,81 @@ def run_shell_blocking(shell_exec: str, cmd: str, cwd: str, env: dict, timeout_s
         cwd=cwd,
         env=env,
     )
+
+
+# ==== Shell Builtins ====
+def resolve_path(base_cwd: str, target: str, prev_cwd: str | None = None) -> str:
+    """
+    Resolve a path relative to base_cwd.
+    Supports cd - (return to previous directory) if prev_cwd is provided.
+    """
+    if target == "-":
+        return prev_cwd if prev_cwd else base_cwd
+    p = os.path.expanduser(target)
+    if not os.path.isabs(p):
+        p = os.path.abspath(os.path.join(base_cwd, p))
+    return p
+
+
+def handle_builtins(sess: dict, cmdline: str) -> str | None:
+    """
+    Handle shell builtin commands: cd, export, unset.
+    Only handles simple commands (no ;, &&, ||, |, or newlines).
+    Returns response string if handled, None otherwise.
+    
+    Session dict should have 'cwd', 'env', and optionally 'prev_cwd' keys.
+    """
+    # Don't handle compound commands - let shell process them
+    if any(x in cmdline for x in (";", "&&", "||", "|", "\n")):
+        return None
+    
+    try:
+        parts = shlex.split(cmdline, posix=True)
+    except ValueError:
+        return "❗ Parse error"
+    
+    if not parts:
+        return "❗ No command"
+    
+    cmd = parts[0]
+    
+    if cmd == "cd":
+        target = parts[1] if len(parts) > 1 else (sess.get("env", {}).get("HOME") or os.path.expanduser("~"))
+        prev_cwd = sess.get("prev_cwd") or sess.get("cwd")
+        new_path = resolve_path(sess.get("cwd", os.getcwd()), target, prev_cwd)
+        if os.path.isdir(new_path):
+            sess["prev_cwd"] = sess.get("cwd")
+            sess["cwd"] = new_path
+            return f"📁 cwd: {new_path}"
+        return f"❌ Directory not found: {target}"
+    
+    if cmd == "export":
+        env = sess.get("env", {})
+        if len(parts) == 1:
+            # Show all environment variables
+            return "\n".join([f"PWD={sess.get('cwd', '')}"] + [f"{k}={v}" for k, v in sorted(env.items())])
+        out_lines = []
+        for tok in parts[1:]:
+            if "=" not in tok:
+                val = env.get(tok)
+                out_lines.append(f"{tok}={val if val is not None else ''}")
+                continue
+            k, v = tok.split("=", 1)
+            env[k] = v
+            out_lines.append(f"set {k}={v}")
+        return "\n".join(out_lines)
+    
+    if cmd == "unset":
+        env = sess.get("env", {})
+        if len(parts) == 1:
+            return "❗ Usage: unset VAR [VAR2 ...]"
+        out_lines = []
+        for tok in parts[1:]:
+            if tok in env:
+                env.pop(tok, None)
+                out_lines.append(f"unset {tok}")
+            else:
+                out_lines.append(f"{tok} not set")
+        return "\n".join(out_lines)
+    
+    return None

@@ -38,10 +38,14 @@ from shared_utils import (
     run_js_blocking,
     run_java_blocking,
     run_shell_blocking,
+    handle_builtins,
 )
 
 # ==== Configuration ====
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+# Development mode - allows unauthenticated access (DANGEROUS in production!)
+# Only enable if you explicitly set WEBAPP_DEV_MODE=1
+DEV_MODE = os.getenv("WEBAPP_DEV_MODE", "").lower() in ("1", "true", "yes")
 # Use same default as bot.py to prevent authorization bypass
 OWNER_IDS = parse_owner_ids(os.getenv("OWNER_ID", DEFAULT_OWNER_ID))
 
@@ -129,11 +133,18 @@ def require_auth(f):
     def decorated(*args, **kwargs):
         init_data = request.headers.get("X-Telegram-Init-Data", "")
         
-        # If no BOT_TOKEN, allow access (development mode)
+        # Block access if BOT_TOKEN is not set (unless explicit DEV_MODE)
         if not BOT_TOKEN:
-            request.user_id = 0
-            request.user_data = {}
-            return f(*args, **kwargs)
+            if DEV_MODE:
+                # Development mode - allow unauthenticated access with warning
+                request.user_id = 0
+                request.user_data = {"dev_mode": True}
+                return f(*args, **kwargs)
+            else:
+                return jsonify({
+                    "error": "Server misconfigured",
+                    "message": "BOT_TOKEN not set. Set WEBAPP_DEV_MODE=1 for development."
+                }), 503
         
         data = validate_telegram_webapp_data(init_data)
         if not data:
@@ -219,20 +230,12 @@ def execute_shell(cmdline: str, sess: dict) -> dict:
         "timestamp": time.time(),
     }
     
-    # Handle cd (with or without argument)
-    stripped = cmdline.strip()
-    if stripped == "cd" or stripped.startswith("cd "):
-        parts = stripped.split(maxsplit=1)
-        # Default to home directory if no argument
-        target = parts[1] if len(parts) > 1 else (sess["env"].get("HOME") or os.path.expanduser("~"))
-        target = os.path.expanduser(target)
-        if not os.path.isabs(target):
-            target = os.path.abspath(os.path.join(sess["cwd"], target))
-        if os.path.isdir(target):
-            sess["cwd"] = target
-            result["output"] = f"Changed to: {target}"
-        else:
-            result["error"] = f"Directory not found: {target}"
+    # Handle shell builtins (cd, export, unset) - same as bot.py
+    # Only handles simple commands, compound commands go to shell
+    builtin_resp = handle_builtins(sess, cmdline)
+    if builtin_resp is not None:
+        result["output"] = builtin_resp
+        if builtin_resp.startswith("❌") or builtin_resp.startswith("❗"):
             result["exit_code"] = 1
         return result
     

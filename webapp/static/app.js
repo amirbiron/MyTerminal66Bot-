@@ -25,6 +25,20 @@ const PLACEHOLDERS = {
     java: 'הזן קוד Java...'
 };
 
+// Welcome message HTML (single source of truth)
+const WELCOME_HTML = `
+    <div class="welcome-message">
+        <div class="welcome-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <polyline points="4 17 10 11 4 5"></polyline>
+                <line x1="12" y1="19" x2="20" y2="19"></line>
+            </svg>
+        </div>
+        <h2>Terminal Web App</h2>
+        <p>הזן פקודה או קוד להרצה</p>
+    </div>
+`;
+
 // ==== DOM Elements ====
 const elements = {
     outputArea: document.getElementById('output-area'),
@@ -38,6 +52,8 @@ const elements = {
     btnResetSession: document.getElementById('btn-reset-session'),
     currentCwd: document.getElementById('current-cwd'),
     userId: document.getElementById('user-id'),
+    allowedCommands: document.getElementById('allowed-commands'),
+    commandsCount: document.getElementById('commands-count'),
     loading: document.getElementById('loading'),
     langTabs: document.querySelectorAll('.lang-tab')
 };
@@ -56,6 +72,9 @@ function init() {
         tg.MainButton.setText('הרץ');
         tg.MainButton.onClick(executeCode);
     }
+    
+    // Show welcome message
+    elements.outputArea.innerHTML = WELCOME_HTML;
     
     // Event listeners
     setupEventListeners();
@@ -207,6 +226,17 @@ async function apiGetSession() {
     return response.json();
 }
 
+async function apiGetCommands() {
+    const response = await fetch('/api/commands', {
+        headers: {
+            'X-Telegram-Init-Data': getInitData()
+        }
+    });
+    
+    if (!response.ok) return null;
+    return response.json();
+}
+
 async function apiResetSession() {
     const response = await fetch('/api/session/reset', {
         method: 'POST',
@@ -287,18 +317,7 @@ function formatOutput(result) {
 }
 
 function clearOutput() {
-    elements.outputArea.innerHTML = `
-        <div class="welcome-message">
-            <div class="welcome-icon">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <polyline points="4 17 10 11 4 5"></polyline>
-                    <line x1="12" y1="19" x2="20" y2="19"></line>
-                </svg>
-            </div>
-            <h2>Terminal Web App</h2>
-            <p>הזן פקודה או קוד להרצה</p>
-        </div>
-    `;
+    elements.outputArea.innerHTML = WELCOME_HTML;
 }
 
 function scrollToBottom() {
@@ -430,6 +449,26 @@ async function loadSessionInfo() {
         }
     } catch (e) {
         console.error('Failed to load session info:', e);
+    }
+    
+    // Load allowed commands
+    try {
+        const cmds = await apiGetCommands();
+        if (cmds) {
+            if (cmds.allow_all) {
+                elements.allowedCommands.textContent = '(כל הפקודות מאושרות)';
+                elements.commandsCount.textContent = '∞';
+            } else if (cmds.commands && cmds.commands.length > 0) {
+                elements.allowedCommands.textContent = cmds.commands.join(', ');
+                elements.commandsCount.textContent = cmds.commands.length;
+            } else {
+                elements.allowedCommands.textContent = '(אין פקודות מאושרות)';
+                elements.commandsCount.textContent = '0';
+            }
+        }
+    } catch (e) {
+        elements.allowedCommands.textContent = '(שגיאה בטעינה)';
+        console.error('Failed to load commands:', e);
     }
 }
 

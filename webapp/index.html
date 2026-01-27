@@ -40,19 +40,8 @@
             </div>
         </header>
 
-        <!-- Output Area -->
-        <main class="output-area" id="output-area">
-            <div class="welcome-message">
-                <div class="welcome-icon">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <polyline points="4 17 10 11 4 5"></polyline>
-                        <line x1="12" y1="19" x2="20" y2="19"></line>
-                    </svg>
-                </div>
-                <h2>Terminal Web App</h2>
-                <p>הזן פקודה או קוד להרצה</p>
-            </div>
-        </main>
+        <!-- Output Area (welcome message injected by JS) -->
+        <main class="output-area" id="output-area"></main>
 
         <!-- Input Area -->
         <footer class="input-area">
@@ -91,6 +80,10 @@
                     <div class="setting-item">
                         <label>מזהה משתמש:</label>
                         <code id="user-id">-</code>
+                    </div>
+                    <div class="setting-item">
+                        <label>פקודות מאושרות (<span id="commands-count">0</span>):</label>
+                        <code id="allowed-commands" style="max-height: 100px; overflow-y: auto; display: block; font-size: 0.75rem;">טוען...</code>
                     </div>
                     <div class="setting-actions">
                         <button id="btn-reset-session" class="btn btn-danger">
