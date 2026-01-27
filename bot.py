@@ -8,14 +8,12 @@ import json
 import time
 import socket
 import asyncio
-import tempfile
 import textwrap
 import subprocess
 import zipfile  # נשאר אם תרצה להשתמש בהמשך
 import io
 import traceback
 import contextlib
-import unicodedata
 import re
 import hashlib
 import secrets
@@ -28,81 +26,48 @@ from telegram import Update, InlineQueryResultArticle, InputTextMessageContent, 
 from telegram.ext import Application, CommandHandler, ContextTypes, InlineQueryHandler, CallbackQueryHandler, ChosenInlineResultHandler, MessageHandler, filters
 from telegram.error import NetworkError, TimedOut, Conflict, BadRequest
 
-# ==== תצורה ====
-def _parse_owner_ids(raw: str | None) -> set[int]:
-    if not raw:
-        return set()
-    parts = [p.strip() for p in raw.replace("\n", ",").split(",")]
-    owners: set[int] = set()
-    for p in parts:
-        if not p:
-            continue
-        try:
-            owners.add(int(p))
-        except ValueError:
-            continue
-    return owners
+# Import shared utilities
+from shared_utils import (
+    DEFAULT_OWNER_ID,
+    parse_owner_ids,
+    parse_cmds_string,
+    DEFAULT_ALLOWED_CMDS,
+    ALLOWED_CMDS_FILE,
+    load_allowed_cmds,
+    save_allowed_cmds,
+    normalize_code,
+    truncate as _truncate_base,
+    is_safe_pip_name,
+    exec_python_in_context,
+    run_js_blocking,
+    run_java_blocking,
+    run_shell_blocking,
+)
 
-OWNER_IDS = _parse_owner_ids(os.getenv("OWNER_ID", "6865105071"))
+# ==== תצורה ====
+OWNER_IDS = parse_owner_ids(os.getenv("OWNER_ID", DEFAULT_OWNER_ID))
 TIMEOUT = int(os.getenv("CMD_TIMEOUT", "60"))
 PIP_TIMEOUT = int(os.getenv("PIP_TIMEOUT", "120"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
 TG_MAX_MESSAGE = int(os.getenv("TG_MAX_MESSAGE", "4000"))
 RESTART_NOTIFY_PATH = os.getenv("RESTART_NOTIFY_PATH", "/tmp/bot_restart_notify.json")
 
-def _parse_cmds_string(value: str) -> set:
-    """Parses comma/newline separated command names into a set, trimming blanks."""
-    if not value:
-        return set()
-    tokens = []
-    # Support both comma and newline separated formats
-    for part in value.replace("\r", "").replace("\n", ",").split(","):
-        tok = part.strip()
-        if tok:
-            tokens.append(tok)
-    return set(tokens)
-
-
-DEFAULT_ALLOWED_CMDS = _parse_cmds_string(
-    os.getenv("ALLOWED_CMDS")
-    or "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env,git,python,python3,pip,pip3,poetry,uv,pytest,go,rustc,cargo,node,npm,npx,tsc,deno,zip,unzip,7z,tar,tee,yes,xargs,printf,kill,killall,bash,sh,chmod,chown,chgrp,df,du,make,gcc,g++,javac,java,ssh,scp"
-)
-
-# In-memory allowlist. Will be overridden from file if present.
-ALLOWED_CMDS = set(DEFAULT_ALLOWED_CMDS)
+# In-memory allowlist - loaded from shared_utils
+ALLOWED_CMDS = load_allowed_cmds()
 
 ALLOW_ALL_COMMANDS = os.getenv("ALLOW_ALL_COMMANDS", "").lower() in ("1", "true", "yes", "on")
 SHELL_EXECUTABLE = os.getenv("SHELL_EXECUTABLE") or ("/bin/bash" if os.path.exists("/bin/bash") else None)
-ALLOWED_CMDS_FILE = os.getenv("ALLOWED_CMDS_FILE", "allowed_cmds.txt")
-
-
-def _serialize_cmds(cmds: set) -> str:
-    # Persist one-per-line for readability
-    return "\n".join(sorted(cmds))
 
 
 def load_allowed_cmds_from_file() -> None:
     """Load allowed commands from file if it exists; otherwise keep current (env/default)."""
     global ALLOWED_CMDS
-    try:
-        if os.path.exists(ALLOWED_CMDS_FILE):
-            with open(ALLOWED_CMDS_FILE, "r", encoding="utf-8") as fh:
-                content = fh.read()
-            parsed = _parse_cmds_string(content)
-            # If file exists but empty, treat as empty allowlist
-            ALLOWED_CMDS = set(parsed)
-    except Exception:
-        # If load fails, keep existing in-memory allowlist
-        pass
+    ALLOWED_CMDS = load_allowed_cmds()
 
 
 def save_allowed_cmds_to_file() -> None:
-    try:
-        with open(ALLOWED_CMDS_FILE, "w", encoding="utf-8") as fh:
-            fh.write(_serialize_cmds(ALLOWED_CMDS))
-    except Exception:
-        # Do not crash on persistence issues
-        pass
+    """Save allowed commands to file."""
+    save_allowed_cmds(ALLOWED_CMDS)
 
 # ==== Reporter ====
 reporter = create_reporter(
@@ -156,24 +121,14 @@ def _get_inline_session(session_key: str):
 def exec_python_in_shared_context(src: str, context_key: int):
     """הרצת קוד פייתון בהקשר משותף לפי מזהה (למשל user_id).
     מחזיר (stdout, stderr, traceback_text | None)
+    Uses shared_utils.exec_python_in_context internally.
     """
     global PY_CONTEXT
     ctx = PY_CONTEXT.get(context_key)
     if ctx is None:
         ctx = {"__builtins__": __builtins__, "__name__": "__main__"}
-    else:
-        # ודא ש-__name__ קיים למען קוד עם if __name__ == "__main__"
-        ctx.setdefault("__name__", "__main__")
         PY_CONTEXT[context_key] = ctx
-    stdout_buffer = io.StringIO()
-    stderr_buffer = io.StringIO()
-    tb_text = None
-    try:
-        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-            exec(src, ctx, ctx)
-    except Exception:
-        tb_text = traceback.format_exc()
-    return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
+    return exec_python_in_context(src, ctx)
 
 
 def _trim_for_message(text: str) -> str:
@@ -181,96 +136,12 @@ def _trim_for_message(text: str) -> str:
     if len(text) > TG_MAX_MESSAGE:
         return text[:TG_MAX_MESSAGE]
     return text
-def _run_shell_blocking(shell_exec: str, q: str, cwd: str, env: dict, timeout_sec: int):
-    """מריץ פקודת shell בצורה חסימתית (להרצה בתוך ת׳רד)."""
-    return subprocess.run(
-        [shell_exec, "-c", q],
-        capture_output=True,
-        text=True,
-        timeout=timeout_sec,
-        cwd=cwd,
-        env=env,
-    )
 
 
-def _run_js_blocking(src: str, cwd: str, env: dict, timeout_sec: int):
-    """מריץ קוד JS באמצעות node על קובץ זמני (להרצה בתוך ת׳רד)."""
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".js", encoding="utf-8") as tf:
-            tf.write(src)
-            tmp_path = tf.name
-        return subprocess.run(
-            ["node", tmp_path],
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            cwd=cwd,
-            env=env,
-        )
-    finally:
-        try:
-            if tmp_path and os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except Exception:
-            pass
-
-
-def _run_java_blocking(src: str, cwd: str, env: dict, timeout_sec: int):
-    """מריץ קוד Java באמצעות javac+java על קובץ זמני (להרצה בתוך ת׳רד).
-    מחפש class ציבורי בקוד כדי לקבוע את שם הקובץ, או משתמש ב-Main כברירת מחדל.
-    """
-    tmp_dir = None
-    try:
-        # יצירת תיקייה זמנית לקומפילציה
-        tmp_dir = tempfile.mkdtemp()
-        
-        # חיפוש class ציבורי כדי לקבוע שם קובץ
-        # תומך גם ב-modifiers כמו: public final class, public abstract class וכו'
-        class_name = "Main"
-        try:
-            match = re.search(r'public\s+(?:final\s+|abstract\s+|static\s+)*class\s+(\w+)', src)
-            if match:
-                class_name = match.group(1)
-        except Exception:
-            pass
-        
-        # כתיבת הקוד לקובץ
-        java_file = os.path.join(tmp_dir, f"{class_name}.java")
-        with open(java_file, "w", encoding="utf-8") as f:
-            f.write(src)
-        
-        # קומפילציה
-        compile_proc = subprocess.run(
-            ["javac", java_file],
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            cwd=tmp_dir,
-            env=env,
-        )
-        
-        if compile_proc.returncode != 0:
-            # אם הקומפילציה נכשלה, נחזיר את תהליך הקומפילציה
-            return compile_proc
-        
-        # הרצה
-        return subprocess.run(
-            ["java", class_name],
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            cwd=tmp_dir,
-            env=env,
-        )
-    finally:
-        # ניקוי הקבצים הזמניים
-        try:
-            if tmp_dir and os.path.exists(tmp_dir):
-                import shutil
-                shutil.rmtree(tmp_dir)
-        except Exception:
-            pass
+# Aliases for shared execution functions (for backwards compatibility)
+_run_shell_blocking = run_shell_blocking
+_run_js_blocking = run_js_blocking
+_run_java_blocking = run_java_blocking
 
 
 def _make_refresh_markup(token: str) -> InlineKeyboardMarkup:
@@ -362,46 +233,13 @@ def report_nowait(user_id: int) -> None:
             pass
 
 def truncate(s: str) -> str:
-    s = (s or "").strip()
-    if not s:
-        return "(no output)"
-    if len(s) <= MAX_OUTPUT:
-        return s
-    return s[:MAX_OUTPUT] + f"\n\n…[truncated {len(s) - MAX_OUTPUT} chars]"
+    """Truncate output to MAX_OUTPUT characters. Uses shared_utils."""
+    return _truncate_base(s, MAX_OUTPUT)
 
 
-def normalize_code(text: str) -> str:
-    """ניקוי תווים נסתרים, גרשיים חכמים, NBSP וכד'.
-    - ממיר גרשיים חכמים לגרשיים רגילים
-    - ממיר NBSP ותווים דומים לרווח רגיל
-    - מנרמל יוניקוד ל-NFKC
-    - מחליף \r\n ל-\n
-    """
-    if not text:
-        return ""
-    # נירמול יוניקוד כללי
-    text = unicodedata.normalize("NFKC", text)
-    # המרות גרשיים חכמים
-    text = text.replace("“", '"').replace("”", '"').replace("„", '"')
-    text = text.replace("‘", "'").replace("’", "'")
-    # NBSP וקרובים
-    text = text.replace("\u00A0", " ").replace("\u202F", " ")
-    # סימני כיוון בלתי נראים
-    text = text.replace("\u200E", "").replace("\u200F", "")
-    # קו מפריד רך -> רגיל
-    text = text.replace("\u00AD", "")
-    # CRLF ל-LF
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # הסרת גדרות קוד מרקדאון ```lang ... ```
-    try:
-        text = re.sub(r"(?m)^\s*```[a-zA-Z0-9_+\-]*\s*$", "", text)
-        text = re.sub(r"(?m)^\s*```\s*$", "", text)
-    except Exception:
-        pass
-    return text
+# normalize_code is imported from shared_utils
 
-
-SAFE_PIP_NAME_RE = re.compile(r'^(?![.-])[a-zA-Z0-9_.-]+$')
+# is_safe_pip_name is imported from shared_utils
 
 
 def install_package(package: str):
@@ -1528,7 +1366,7 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
             if not m:
                 break
             missing_mod = m.group(1)
-            if not SAFE_PIP_NAME_RE.match(missing_mod):
+            if not is_safe_pip_name(missing_mod):
                 await update.message.reply_text(f"❌ שם מודול לא תקין להתקנה: '{missing_mod}'")
                 break
             try:
@@ -1832,7 +1670,7 @@ async def py_run_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
             if not m:
                 break
             missing_mod = m.group(1)
-            if not SAFE_PIP_NAME_RE.match(missing_mod):
+            if not is_safe_pip_name(missing_mod):
                 await update.message.reply_text(f"❌ שם מודול לא תקין להתקנה: '{missing_mod}'")
                 break
             try:

@@ -9,7 +9,18 @@ bot.py and webapp_server.py to avoid code duplication.
 
 import os
 import re
+import io
+import tempfile
+import textwrap
+import traceback
+import subprocess
+import contextlib
 import unicodedata
+
+
+# ==== Default Owner ID ====
+# Used when OWNER_ID env var is not set
+DEFAULT_OWNER_ID = "6865105071"
 
 
 # ==== Configuration ====
@@ -144,3 +155,116 @@ SAFE_PIP_NAME_RE = re.compile(r'^(?![.-])[a-zA-Z0-9_.-]+$')
 def is_safe_pip_name(name: str) -> bool:
     """Check if a package name is safe for pip install."""
     return bool(SAFE_PIP_NAME_RE.match(name))
+
+
+# ==== Code Execution ====
+def exec_python_in_context(src: str, ctx: dict) -> tuple[str, str, str | None]:
+    """
+    Execute Python code in a given context dict.
+    Returns (stdout, stderr, traceback_text | None)
+    """
+    ctx.setdefault("__builtins__", __builtins__)
+    ctx.setdefault("__name__", "__main__")
+    
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+    tb_text = None
+    
+    try:
+        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            exec(src, ctx, ctx)
+    except Exception:
+        tb_text = traceback.format_exc()
+    
+    return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
+
+
+def run_js_blocking(src: str, cwd: str, env: dict, timeout_sec: int) -> subprocess.CompletedProcess:
+    """Execute JS code via node on a temp file (blocking, for use in thread)."""
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".js", encoding="utf-8") as tf:
+            tf.write(src)
+            tmp_path = tf.name
+        return subprocess.run(
+            ["node", tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            cwd=cwd,
+            env=env,
+        )
+    finally:
+        try:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+def run_java_blocking(src: str, cwd: str, env: dict, timeout_sec: int) -> subprocess.CompletedProcess:
+    """
+    Execute Java code via javac+java on a temp file (blocking, for use in thread).
+    Finds public class name in code to determine filename, defaults to Main.
+    """
+    tmp_dir = None
+    try:
+        # Create temp directory for compilation
+        tmp_dir = tempfile.mkdtemp()
+        
+        # Find public class name
+        class_name = "Main"
+        try:
+            match = re.search(r'public\s+(?:final\s+|abstract\s+|static\s+)*class\s+(\w+)', src)
+            if match:
+                class_name = match.group(1)
+        except Exception:
+            pass
+        
+        # Write code to file
+        java_file = os.path.join(tmp_dir, f"{class_name}.java")
+        with open(java_file, "w", encoding="utf-8") as f:
+            f.write(src)
+        
+        # Compile
+        compile_proc = subprocess.run(
+            ["javac", java_file],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            cwd=tmp_dir,
+            env=env,
+        )
+        
+        if compile_proc.returncode != 0:
+            return compile_proc
+        
+        # Run
+        return subprocess.run(
+            ["java", class_name],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            cwd=tmp_dir,
+            env=env,
+        )
+    finally:
+        # Clean up temp files
+        try:
+            if tmp_dir and os.path.exists(tmp_dir):
+                import shutil
+                shutil.rmtree(tmp_dir)
+        except Exception:
+            pass
+
+
+def run_shell_blocking(shell_exec: str, cmd: str, cwd: str, env: dict, timeout_sec: int) -> subprocess.CompletedProcess:
+    """Execute shell command (blocking, for use in thread)."""
+    return subprocess.run(
+        [shell_exec, "-c", cmd],
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+        cwd=cwd,
+        env=env,
+    )

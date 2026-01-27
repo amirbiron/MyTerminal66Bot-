@@ -15,9 +15,7 @@ import json
 import time
 import hmac
 import shlex
-import signal
 import hashlib
-import tempfile
 import textwrap
 import traceback
 import subprocess
@@ -31,15 +29,21 @@ from flask import Flask, request, jsonify, send_from_directory
 
 # Import shared utilities
 from shared_utils import (
+    DEFAULT_OWNER_ID,
     parse_owner_ids,
     load_allowed_cmds,
     normalize_code,
     truncate,
+    exec_python_in_context,
+    run_js_blocking,
+    run_java_blocking,
+    run_shell_blocking,
 )
 
 # ==== Configuration ====
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-OWNER_IDS = parse_owner_ids(os.getenv("OWNER_ID", ""))
+# Use same default as bot.py to prevent authorization bypass
+OWNER_IDS = parse_owner_ids(os.getenv("OWNER_ID", DEFAULT_OWNER_ID))
 
 TIMEOUT = int(os.getenv("CMD_TIMEOUT", "60"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
@@ -56,7 +60,7 @@ webapp_sessions_lock = Lock()
 # Python context per user_id
 PY_CONTEXT = {}
 
-# Thread pool for Python execution with timeout
+# Thread pool for code execution with timeout
 executor = ThreadPoolExecutor(max_workers=4)
 
 # Flask app
@@ -138,8 +142,8 @@ def require_auth(f):
         user = data.get("user", {})
         user_id = user.get("id", 0)
         
-        # Check authorization
-        if OWNER_IDS and user_id not in OWNER_IDS:
+        # Check authorization - OWNER_IDS is never empty due to default
+        if user_id not in OWNER_IDS:
             return jsonify({"error": "Forbidden", "message": "Access denied", "user_id": user_id}), 403
         
         request.user_id = user_id
@@ -215,10 +219,12 @@ def execute_shell(cmdline: str, sess: dict) -> dict:
         "timestamp": time.time(),
     }
     
-    # Handle cd
-    if cmdline.strip().startswith("cd "):
-        parts = cmdline.strip().split(maxsplit=1)
-        target = parts[1] if len(parts) > 1 else "~"
+    # Handle cd (with or without argument)
+    stripped = cmdline.strip()
+    if stripped == "cd" or stripped.startswith("cd "):
+        parts = stripped.split(maxsplit=1)
+        # Default to home directory if no argument
+        target = parts[1] if len(parts) > 1 else (sess["env"].get("HOME") or os.path.expanduser("~"))
         target = os.path.expanduser(target)
         if not os.path.isabs(target):
             target = os.path.abspath(os.path.join(sess["cwd"], target))
@@ -247,45 +253,24 @@ def execute_shell(cmdline: str, sess: dict) -> dict:
     
     try:
         shell_exec = SHELL_EXECUTABLE or "/bin/bash"
-        p = subprocess.run(
-            [shell_exec, "-c", cmdline],
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT,
-            cwd=sess["cwd"],
-            env=sess["env"],
-        )
-        result["output"] = truncate(p.stdout or "", MAX_OUTPUT)
-        result["error"] = p.stderr or ""
-        result["exit_code"] = p.returncode
+        future = executor.submit(run_shell_blocking, shell_exec, cmdline, sess["cwd"], sess["env"], TIMEOUT)
+        try:
+            p = future.result(timeout=TIMEOUT + 5)  # Extra time for thread overhead
+            result["output"] = truncate(p.stdout or "", MAX_OUTPUT)
+            result["error"] = p.stderr or ""
+            result["exit_code"] = p.returncode
+        except FuturesTimeoutError:
+            future.cancel()
+            result["error"] = f"Timeout ({TIMEOUT}s)"
+            result["exit_code"] = -1
     except subprocess.TimeoutExpired:
-        result["error"] = "Timeout"
+        result["error"] = f"Timeout ({TIMEOUT}s)"
         result["exit_code"] = -1
     except Exception as e:
         result["error"] = str(e)
         result["exit_code"] = -1
     
     return result
-
-
-def _exec_python_code(code: str, user_id: int) -> tuple:
-    """Execute Python code in shared context. Returns (stdout, stderr, tb_text)."""
-    ctx = PY_CONTEXT.get(user_id)
-    if ctx is None:
-        ctx = {"__builtins__": __builtins__, "__name__": "__main__"}
-        PY_CONTEXT[user_id] = ctx
-    
-    stdout_buffer = io.StringIO()
-    stderr_buffer = io.StringIO()
-    tb_text = None
-    
-    try:
-        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-            exec(code, ctx, ctx)
-    except Exception:
-        tb_text = traceback.format_exc()
-    
-    return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
 
 
 def execute_python(code: str, user_id: int) -> dict:
@@ -302,16 +287,29 @@ def execute_python(code: str, user_id: int) -> dict:
         "timestamp": time.time(),
     }
     
+    # Get or create context for user
+    ctx = PY_CONTEXT.get(user_id)
+    if ctx is None:
+        ctx = {"__builtins__": __builtins__, "__name__": "__main__"}
+        PY_CONTEXT[user_id] = ctx
+    
     try:
         # Execute with timeout using ThreadPoolExecutor
-        future = executor.submit(_exec_python_code, cleaned, user_id)
+        future = executor.submit(exec_python_in_context, cleaned, ctx)
         try:
             out, err, tb_text = future.result(timeout=TIMEOUT)
             result["output"] = truncate(out, MAX_OUTPUT)
-            result["error"] = err
-            if tb_text:
-                result["error"] = tb_text
+            
+            # Preserve both stderr and traceback (don't overwrite)
+            error_parts = []
+            if err and err.strip():
+                error_parts.append(err.rstrip())
+            if tb_text and tb_text.strip():
+                error_parts.append(tb_text.rstrip())
                 result["exit_code"] = 1
+            
+            result["error"] = "\n".join(error_parts)
+            
         except FuturesTimeoutError:
             future.cancel()
             result["error"] = f"Timeout ({TIMEOUT}s)"
@@ -337,25 +335,19 @@ def execute_js(code: str, sess: dict) -> dict:
         "timestamp": time.time(),
     }
     
-    tmp_path = None
     try:
-        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".js", encoding="utf-8") as tf:
-            tf.write(cleaned)
-            tmp_path = tf.name
-        
-        p = subprocess.run(
-            ["node", tmp_path],
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT,
-            cwd=sess["cwd"],
-            env=sess["env"],
-        )
-        result["output"] = truncate(p.stdout or "", MAX_OUTPUT)
-        result["error"] = p.stderr or ""
-        result["exit_code"] = p.returncode
+        future = executor.submit(run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+        try:
+            p = future.result(timeout=TIMEOUT + 5)
+            result["output"] = truncate(p.stdout or "", MAX_OUTPUT)
+            result["error"] = p.stderr or ""
+            result["exit_code"] = p.returncode
+        except FuturesTimeoutError:
+            future.cancel()
+            result["error"] = f"Timeout ({TIMEOUT}s)"
+            result["exit_code"] = -1
     except subprocess.TimeoutExpired:
-        result["error"] = "Timeout"
+        result["error"] = f"Timeout ({TIMEOUT}s)"
         result["exit_code"] = -1
     except FileNotFoundError:
         result["error"] = "Node.js not found"
@@ -363,12 +355,6 @@ def execute_js(code: str, sess: dict) -> dict:
     except Exception as e:
         result["error"] = str(e)
         result["exit_code"] = -1
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
     
     return result
 
@@ -387,50 +373,19 @@ def execute_java(code: str, sess: dict) -> dict:
         "timestamp": time.time(),
     }
     
-    tmp_dir = None
     try:
-        tmp_dir = tempfile.mkdtemp()
-        
-        # Find class name
-        class_name = "Main"
-        match = re.search(r'public\s+(?:final\s+|abstract\s+|static\s+)*class\s+(\w+)', cleaned)
-        if match:
-            class_name = match.group(1)
-        
-        java_file = os.path.join(tmp_dir, f"{class_name}.java")
-        with open(java_file, "w", encoding="utf-8") as f:
-            f.write(cleaned)
-        
-        # Compile
-        compile_proc = subprocess.run(
-            ["javac", java_file],
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT,
-            cwd=tmp_dir,
-            env=sess["env"],
-        )
-        
-        if compile_proc.returncode != 0:
-            result["error"] = compile_proc.stderr or "Compilation failed"
-            result["exit_code"] = compile_proc.returncode
-            return result
-        
-        # Run
-        p = subprocess.run(
-            ["java", class_name],
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT,
-            cwd=tmp_dir,
-            env=sess["env"],
-        )
-        result["output"] = truncate(p.stdout or "", MAX_OUTPUT)
-        result["error"] = p.stderr or ""
-        result["exit_code"] = p.returncode
-        
+        future = executor.submit(run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+        try:
+            p = future.result(timeout=TIMEOUT + 10)  # Extra time for compilation
+            result["output"] = truncate(p.stdout or "", MAX_OUTPUT)
+            result["error"] = p.stderr or ""
+            result["exit_code"] = p.returncode
+        except FuturesTimeoutError:
+            future.cancel()
+            result["error"] = f"Timeout ({TIMEOUT}s)"
+            result["exit_code"] = -1
     except subprocess.TimeoutExpired:
-        result["error"] = "Timeout"
+        result["error"] = f"Timeout ({TIMEOUT}s)"
         result["exit_code"] = -1
     except FileNotFoundError:
         result["error"] = "Java not found"
@@ -438,13 +393,6 @@ def execute_java(code: str, sess: dict) -> dict:
     except Exception as e:
         result["error"] = str(e)
         result["exit_code"] = -1
-    finally:
-        if tmp_dir and os.path.exists(tmp_dir):
-            try:
-                import shutil
-                shutil.rmtree(tmp_dir)
-            except Exception:
-                pass
     
     return result
 
