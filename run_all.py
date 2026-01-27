@@ -23,27 +23,32 @@ import threading
 import signal
 import time
 
-# Track thread errors
-bot_error = None
-web_error = None
+
+def run_webapp_in_thread():
+    """Run the Flask web server in a background thread."""
+    try:
+        import webapp_server
+        host = os.getenv("WEBAPP_HOST", "0.0.0.0")
+        port = int(os.getenv("WEBAPP_PORT", "8080"))
+        # Disable Flask reloader when running in thread
+        webapp_server.app.run(host=host, port=port, debug=False, threaded=True, use_reloader=False)
+    except Exception as e:
+        print(f"❌ Web App error: {e}")
 
 
-def run_bot():
-    """Run the Telegram bot."""
-    global bot_error
+def run_bot_in_main():
+    """Run the Telegram bot in the main thread (required for signal handlers)."""
     print("🤖 Starting Telegram Bot...")
     try:
         import bot
         bot.main()
     except Exception as e:
-        bot_error = e
         print(f"❌ Bot error: {e}")
         raise
 
 
-def run_webapp():
-    """Run the Flask web server."""
-    global web_error
+def run_webapp_only():
+    """Run only the Flask web server."""
     print("🌐 Starting Web App Server...")
     try:
         import webapp_server
@@ -51,9 +56,8 @@ def run_webapp():
         port = int(os.getenv("WEBAPP_PORT", "8080"))
         webapp_server.run_server(host=host, port=port)
     except Exception as e:
-        web_error = e
         print(f"❌ Web App error: {e}")
-        raise
+        sys.exit(1)
 
 
 def main():
@@ -62,70 +66,39 @@ def main():
     parser.add_argument("--web-only", action="store_true", help="Run only the Web App server")
     args = parser.parse_args()
     
-    # Handle graceful shutdown
-    shutdown_event = threading.Event()
-    exit_code = 0
-    
-    def signal_handler(signum, frame):
-        print("\n⏹️ Shutting down...")
-        shutdown_event.set()
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
     if args.bot_only:
-        try:
-            run_bot()
-        except Exception:
-            sys.exit(1)
-        sys.exit(0)
-    elif args.web_only:
-        try:
-            run_webapp()
-        except Exception:
-            sys.exit(1)
-        sys.exit(0)
+        run_bot_in_main()
+        return
+    
+    if args.web_only:
+        run_webapp_only()
+        return
+    
+    # Run both: Web App in thread, Bot in main thread
+    # (Bot MUST be in main thread for signal handlers to work)
+    
+    print("🌐 Starting Web App Server in background...")
+    web_thread = threading.Thread(target=run_webapp_in_thread, daemon=True, name="webapp")
+    web_thread.start()
+    
+    # Give the web server a moment to start
+    time.sleep(1)
+    
+    if web_thread.is_alive():
+        print(f"✅ Web App running on http://0.0.0.0:{os.getenv('WEBAPP_PORT', '8080')}")
     else:
-        # Run both in separate threads
-        bot_thread = threading.Thread(target=run_bot, daemon=True, name="bot")
-        web_thread = threading.Thread(target=run_webapp, daemon=True, name="webapp")
-        
-        bot_thread.start()
-        web_thread.start()
-        
-        # Wait a moment for threads to start and potentially fail
-        time.sleep(2)
-        
-        # Check if threads started successfully
-        if not bot_thread.is_alive() and not web_thread.is_alive():
-            print("❌ Both services failed to start")
-            sys.exit(1)
-        
-        if bot_thread.is_alive() and web_thread.is_alive():
-            print("\n✅ Both services started!")
-            print("   Bot: Running with polling")
-            print(f"   Web: http://0.0.0.0:{os.getenv('WEBAPP_PORT', '8080')}")
-            print("\nPress Ctrl+C to stop.\n")
-        elif not bot_thread.is_alive():
-            print("⚠️ Bot failed to start, web server running")
-            exit_code = 1
-        elif not web_thread.is_alive():
-            print("⚠️ Web server failed to start, bot running")
-            exit_code = 1
-        
-        # Wait for shutdown or thread death
-        while not shutdown_event.is_set():
-            time.sleep(1)
-            
-            # Check if both threads died (crash)
-            if not bot_thread.is_alive() and not web_thread.is_alive():
-                print("❌ Both services have stopped unexpectedly")
-                sys.exit(1)
-        
-        # Exit with appropriate code
-        if bot_error or web_error:
-            sys.exit(1)
-        sys.exit(exit_code)
+        print("⚠️ Web App failed to start")
+    
+    # Run bot in main thread (required!)
+    print("🤖 Starting Telegram Bot in main thread...")
+    try:
+        run_bot_in_main()
+    except KeyboardInterrupt:
+        print("\n⏹️ Shutting down...")
+        sys.exit(0)
+    except Exception as e:
+        print(f"❌ Bot crashed: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
