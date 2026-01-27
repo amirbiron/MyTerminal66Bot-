@@ -659,24 +659,9 @@ async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
         )
     
     # הצגת כפתורים למשתמש מורשה
-    webapp_url = os.getenv("WEBAPP_URL", "")
-    buttons = []
-    
-    if webapp_url:
-        from telegram import WebAppInfo
-        buttons.append([InlineKeyboardButton("🖥️ פתח Web App", web_app=WebAppInfo(url=webapp_url))])
-    
-    buttons.append([InlineKeyboardButton("📋 רשימת פקודות", callback_data="show_commands")])
-    
+    buttons = _get_welcome_buttons()
     await update.message.reply_text(
-        "🤖 <b>Terminal Bot</b>\n\n"
-        "פקודות זמינות:\n"
-        "• /sh <פקודה> - הרצת Shell\n"
-        "• /py <קוד> - הרצת Python\n"
-        "• /js <קוד> - הרצת JavaScript\n"
-        "• /java <קוד> - הרצת Java\n"
-        "• /webapp - פתיחת ממשק גרפי\n\n"
-        "לעזרה נוספת: /help",
+        _get_welcome_text(),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
     )
@@ -707,10 +692,38 @@ async def webapp_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def show_commands_callback(client, callback_query):
+def _get_welcome_text() -> str:
+    """מחזיר את טקסט הפתיחה."""
+    return (
+        "🤖 <b>Terminal Bot</b>\n\n"
+        "פקודות זמינות:\n"
+        "• /sh <פקודה> - הרצת Shell\n"
+        "• /py <קוד> - הרצת Python\n"
+        "• /js <קוד> - הרצת JavaScript\n"
+        "• /java <קוד> - הרצת Java\n"
+        "• /webapp - פתיחת ממשק גרפי\n\n"
+        "לעזרה נוספת: /help"
+    )
+
+
+def _get_welcome_buttons() -> list:
+    """מחזיר את כפתורי הפתיחה."""
+    from telegram import WebAppInfo
+    webapp_url = os.getenv("WEBAPP_URL", "")
+    buttons = []
+    
+    if webapp_url:
+        buttons.append([InlineKeyboardButton("🖥️ פתח Web App", web_app=WebAppInfo(url=webapp_url))])
+    
+    buttons.append([InlineKeyboardButton("📋 רשימת פקודות", callback_data="show_commands")])
+    return buttons
+
+
+async def show_commands_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
     """מציג רשימת פקודות מפורטת."""
-    await callback_query.answer()
-    await callback_query.edit_message_text(
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
         "📋 <b>רשימת פקודות מלאה:</b>\n\n"
         "<b>הרצת קוד:</b>\n"
         "• /sh <פקודה> - Shell/Bash\n"
@@ -742,27 +755,13 @@ async def show_commands_callback(client, callback_query):
     )
 
 
-async def back_to_start_callback(client, callback_query):
+async def back_to_start_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
     """חזרה למסך הפתיחה."""
-    await callback_query.answer()
-    webapp_url = os.getenv("WEBAPP_URL", "")
-    buttons = []
-    
-    if webapp_url:
-        from telegram import WebAppInfo
-        buttons.append([InlineKeyboardButton("🖥️ פתח Web App", web_app=WebAppInfo(url=webapp_url))])
-    
-    buttons.append([InlineKeyboardButton("📋 רשימת פקודות", callback_data="show_commands")])
-    
-    await callback_query.edit_message_text(
-        "🤖 <b>Terminal Bot</b>\n\n"
-        "פקודות זמינות:\n"
-        "• /sh <פקודה> - הרצת Shell\n"
-        "• /py <קוד> - הרצת Python\n"
-        "• /js <קוד> - הרצת JavaScript\n"
-        "• /java <קוד> - הרצת Java\n"
-        "• /webapp - פתיחת ממשק גרפי\n\n"
-        "לעזרה נוספת: /help",
+    query = update.callback_query
+    await query.answer()
+    buttons = _get_welcome_buttons()
+    await query.edit_message_text(
+        _get_welcome_text(),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
     )

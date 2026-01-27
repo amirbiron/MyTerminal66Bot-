@@ -15,127 +15,57 @@ import json
 import time
 import hmac
 import shlex
+import signal
 import hashlib
-import asyncio
 import tempfile
 import textwrap
 import traceback
 import subprocess
 import contextlib
-import unicodedata
 from functools import wraps
 from urllib.parse import parse_qsl, unquote
 from threading import Lock
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-from flask import Flask, request, jsonify, send_from_directory, render_template_string
+from flask import Flask, request, jsonify, send_from_directory
 
-# ==== תצורה ====
+# Import shared utilities
+from shared_utils import (
+    parse_owner_ids,
+    load_allowed_cmds,
+    normalize_code,
+    truncate,
+)
+
+# ==== Configuration ====
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-WEBAPP_SECRET = os.getenv("WEBAPP_SECRET", "")  # אופציונלי - secret נוסף לאבטחה
-OWNER_IDS = set()
-_owner_raw = os.getenv("OWNER_ID", "")
-if _owner_raw:
-    for p in _owner_raw.replace("\n", ",").split(","):
-        p = p.strip()
-        if p.isdigit():
-            OWNER_IDS.add(int(p))
+OWNER_IDS = parse_owner_ids(os.getenv("OWNER_ID", ""))
 
 TIMEOUT = int(os.getenv("CMD_TIMEOUT", "60"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
 SHELL_EXECUTABLE = os.getenv("SHELL_EXECUTABLE") or ("/bin/bash" if os.path.exists("/bin/bash") else None)
 ALLOW_ALL_COMMANDS = os.getenv("ALLOW_ALL_COMMANDS", "").lower() in ("1", "true", "yes", "on")
 
-# רשימת פקודות מאושרות (מועתק מ-bot.py)
-DEFAULT_ALLOWED_CMDS = set(
-    "ls,pwd,cp,mv,rm,mkdir,rmdir,touch,ln,stat,du,df,find,realpath,readlink,file,tar,cat,tac,head,tail,cut,sort,uniq,wc,sed,awk,tr,paste,join,nl,rev,grep,curl,wget,ping,traceroute,dig,host,nslookup,ip,ss,nc,netstat,uname,uptime,date,whoami,id,who,w,hostname,lscpu,lsblk,free,nproc,ps,top,echo,env,git,python,python3,pip,pip3,poetry,uv,pytest,go,rustc,cargo,node,npm,npx,tsc,deno,zip,unzip,7z,tar,tee,yes,xargs,printf,kill,killall,bash,sh,chmod,chown,chgrp,df,du,make,gcc,g++,javac,java,ssh,scp".split(",")
-)
-ALLOWED_CMDS = set(DEFAULT_ALLOWED_CMDS)
+# Load allowed commands (respects ENV and file like bot.py)
+ALLOWED_CMDS = load_allowed_cmds()
 
-# סשנים לפי user_id
+# Sessions per user_id
 webapp_sessions = {}
 webapp_sessions_lock = Lock()
 
-# הקשר פייתון לפי user_id
+# Python context per user_id
 PY_CONTEXT = {}
+
+# Thread pool for Python execution with timeout
+executor = ThreadPoolExecutor(max_workers=4)
 
 # Flask app
 app = Flask(__name__, static_folder="webapp/static")
 
-# ==== עזר ====
-def normalize_code(text: str) -> str:
-    """ניקוי תווים נסתרים, גרשיים חכמים, NBSP וכד'."""
-    if not text:
-        return ""
-    text = unicodedata.normalize("NFKC", text)
-    text = text.replace(""", '"').replace(""", '"').replace("„", '"')
-    text = text.replace("'", "'").replace("'", "'")
-    text = text.replace("\u00A0", " ").replace("\u202F", " ")
-    text = text.replace("\u200E", "").replace("\u200F", "")
-    text = text.replace("\u00AD", "")
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    try:
-        text = re.sub(r"(?m)^\s*```[a-zA-Z0-9_+\-]*\s*$", "", text)
-        text = re.sub(r"(?m)^\s*```\s*$", "", text)
-    except Exception:
-        pass
-    return text
 
-
-def truncate(s: str) -> str:
-    s = (s or "").strip()
-    if not s:
-        return "(no output)"
-    if len(s) <= MAX_OUTPUT:
-        return s
-    return s[:MAX_OUTPUT] + f"\n\n…[truncated {len(s) - MAX_OUTPUT} chars]"
-
-
-def validate_telegram_webapp_data(init_data: str) -> dict | None:
-    """
-    מאמת את הנתונים שנשלחו מ-Telegram Web App.
-    מחזיר dict עם הנתונים אם תקינים, None אם לא.
-    """
-    if not BOT_TOKEN:
-        return None
-    
-    try:
-        # פירוק הנתונים
-        parsed = dict(parse_qsl(init_data, keep_blank_values=True))
-        if "hash" not in parsed:
-            return None
-        
-        received_hash = parsed.pop("hash")
-        
-        # יצירת data-check-string
-        data_check_arr = []
-        for key in sorted(parsed.keys()):
-            data_check_arr.append(f"{key}={parsed[key]}")
-        data_check_string = "\n".join(data_check_arr)
-        
-        # חישוב ה-hash
-        secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
-        calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-        
-        if not hmac.compare_digest(calculated_hash, received_hash):
-            return None
-        
-        # בדיקת תוקף (עד 24 שעות)
-        auth_date = int(parsed.get("auth_date", 0))
-        if time.time() - auth_date > 86400:
-            return None
-        
-        # פירוק user
-        user_data = parsed.get("user", "{}")
-        user = json.loads(unquote(user_data))
-        parsed["user"] = user
-        
-        return parsed
-    except Exception:
-        return None
-
-
+# ==== Helpers ====
 def get_session(user_id: int) -> dict:
-    """מקבל או יוצר סשן למשתמש."""
+    """Get or create session for user."""
     with webapp_sessions_lock:
         if user_id not in webapp_sessions:
             webapp_sessions[user_id] = {
@@ -145,13 +75,57 @@ def get_session(user_id: int) -> dict:
         return webapp_sessions[user_id]
 
 
+def validate_telegram_webapp_data(init_data: str) -> dict | None:
+    """
+    Validate data sent from Telegram Web App.
+    Returns dict with data if valid, None otherwise.
+    """
+    if not BOT_TOKEN:
+        return None
+    
+    try:
+        # Parse data
+        parsed = dict(parse_qsl(init_data, keep_blank_values=True))
+        if "hash" not in parsed:
+            return None
+        
+        received_hash = parsed.pop("hash")
+        
+        # Create data-check-string
+        data_check_arr = []
+        for key in sorted(parsed.keys()):
+            data_check_arr.append(f"{key}={parsed[key]}")
+        data_check_string = "\n".join(data_check_arr)
+        
+        # Calculate hash
+        secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+        calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+        
+        if not hmac.compare_digest(calculated_hash, received_hash):
+            return None
+        
+        # Check validity (up to 24 hours)
+        auth_date = int(parsed.get("auth_date", 0))
+        if time.time() - auth_date > 86400:
+            return None
+        
+        # Parse user
+        user_data = parsed.get("user", "{}")
+        user = json.loads(unquote(user_data))
+        parsed["user"] = user
+        
+        return parsed
+    except Exception:
+        return None
+
+
 def require_auth(f):
-    """דקורטור לאימות משתמש."""
+    """Decorator for user authentication."""
     @wraps(f)
     def decorated(*args, **kwargs):
         init_data = request.headers.get("X-Telegram-Init-Data", "")
         
-        # אם אין BOT_TOKEN, נאפשר גישה (למצב פיתוח)
+        # If no BOT_TOKEN, allow access (development mode)
         if not BOT_TOKEN:
             request.user_id = 0
             request.user_data = {}
@@ -164,7 +138,7 @@ def require_auth(f):
         user = data.get("user", {})
         user_id = user.get("id", 0)
         
-        # בדיקת הרשאה
+        # Check authorization
         if OWNER_IDS and user_id not in OWNER_IDS:
             return jsonify({"error": "Forbidden", "message": "Access denied", "user_id": user_id}), 403
         
@@ -178,26 +152,26 @@ def require_auth(f):
 
 @app.route("/")
 def index():
-    """מחזיר את דף ה-Web App הראשי."""
+    """Return main Web App page."""
     return send_from_directory("webapp", "index.html")
 
 
 @app.route("/static/<path:filename>")
 def static_files(filename):
-    """מחזיר קבצים סטטיים."""
+    """Return static files."""
     return send_from_directory("webapp/static", filename)
 
 
 @app.route("/api/health")
 def health():
-    """בדיקת בריאות."""
+    """Health check."""
     return jsonify({"status": "ok", "timestamp": time.time()})
 
 
 @app.route("/api/execute", methods=["POST"])
 @require_auth
 def execute():
-    """מריץ פקודה או קוד."""
+    """Execute command or code."""
     try:
         data = request.get_json()
         if not data:
@@ -212,17 +186,8 @@ def execute():
         user_id = getattr(request, "user_id", 0)
         sess = get_session(user_id)
         
-        result = {
-            "type": exec_type,
-            "code": code,
-            "output": "",
-            "error": "",
-            "exit_code": 0,
-            "timestamp": time.time(),
-        }
-        
         if exec_type == "sh":
-            result = execute_shell(code, sess, user_id)
+            result = execute_shell(code, sess)
         elif exec_type == "py":
             result = execute_python(code, user_id)
         elif exec_type == "js":
@@ -238,8 +203,8 @@ def execute():
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 
-def execute_shell(cmdline: str, sess: dict, user_id: int) -> dict:
-    """מריץ פקודת shell."""
+def execute_shell(cmdline: str, sess: dict) -> dict:
+    """Execute shell command."""
     cmdline = normalize_code(cmdline)
     result = {
         "type": "sh",
@@ -250,7 +215,7 @@ def execute_shell(cmdline: str, sess: dict, user_id: int) -> dict:
         "timestamp": time.time(),
     }
     
-    # טיפול ב-cd
+    # Handle cd
     if cmdline.strip().startswith("cd "):
         parts = cmdline.strip().split(maxsplit=1)
         target = parts[1] if len(parts) > 1 else "~"
@@ -265,7 +230,7 @@ def execute_shell(cmdline: str, sess: dict, user_id: int) -> dict:
             result["exit_code"] = 1
         return result
     
-    # בדיקת הרשאה
+    # Check permission
     if not ALLOW_ALL_COMMANDS:
         try:
             parts = shlex.split(cmdline, posix=True)
@@ -290,7 +255,7 @@ def execute_shell(cmdline: str, sess: dict, user_id: int) -> dict:
             cwd=sess["cwd"],
             env=sess["env"],
         )
-        result["output"] = truncate(p.stdout or "")
+        result["output"] = truncate(p.stdout or "", MAX_OUTPUT)
         result["error"] = p.stderr or ""
         result["exit_code"] = p.returncode
     except subprocess.TimeoutExpired:
@@ -303,8 +268,28 @@ def execute_shell(cmdline: str, sess: dict, user_id: int) -> dict:
     return result
 
 
+def _exec_python_code(code: str, user_id: int) -> tuple:
+    """Execute Python code in shared context. Returns (stdout, stderr, tb_text)."""
+    ctx = PY_CONTEXT.get(user_id)
+    if ctx is None:
+        ctx = {"__builtins__": __builtins__, "__name__": "__main__"}
+        PY_CONTEXT[user_id] = ctx
+    
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+    tb_text = None
+    
+    try:
+        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            exec(code, ctx, ctx)
+    except Exception:
+        tb_text = traceback.format_exc()
+    
+    return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
+
+
 def execute_python(code: str, user_id: int) -> dict:
-    """מריץ קוד פייתון בהקשר משותף."""
+    """Execute Python code in shared context with timeout."""
     cleaned = textwrap.dedent(code)
     cleaned = normalize_code(cleaned).strip("\n") + "\n"
     
@@ -317,29 +302,29 @@ def execute_python(code: str, user_id: int) -> dict:
         "timestamp": time.time(),
     }
     
-    # אתחול הקשר
-    ctx = PY_CONTEXT.get(user_id)
-    if ctx is None:
-        ctx = {"__builtins__": __builtins__, "__name__": "__main__"}
-        PY_CONTEXT[user_id] = ctx
-    
-    stdout_buffer = io.StringIO()
-    stderr_buffer = io.StringIO()
-    
     try:
-        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-            exec(cleaned, ctx, ctx)
-        result["output"] = truncate(stdout_buffer.getvalue())
-        result["error"] = stderr_buffer.getvalue()
-    except Exception:
-        result["error"] = traceback.format_exc()
+        # Execute with timeout using ThreadPoolExecutor
+        future = executor.submit(_exec_python_code, cleaned, user_id)
+        try:
+            out, err, tb_text = future.result(timeout=TIMEOUT)
+            result["output"] = truncate(out, MAX_OUTPUT)
+            result["error"] = err
+            if tb_text:
+                result["error"] = tb_text
+                result["exit_code"] = 1
+        except FuturesTimeoutError:
+            future.cancel()
+            result["error"] = f"Timeout ({TIMEOUT}s)"
+            result["exit_code"] = -1
+    except Exception as e:
+        result["error"] = str(e)
         result["exit_code"] = 1
     
     return result
 
 
 def execute_js(code: str, sess: dict) -> dict:
-    """מריץ קוד JavaScript עם Node.js."""
+    """Execute JavaScript code with Node.js."""
     cleaned = textwrap.dedent(code)
     cleaned = normalize_code(cleaned).strip("\n") + "\n"
     
@@ -366,7 +351,7 @@ def execute_js(code: str, sess: dict) -> dict:
             cwd=sess["cwd"],
             env=sess["env"],
         )
-        result["output"] = truncate(p.stdout or "")
+        result["output"] = truncate(p.stdout or "", MAX_OUTPUT)
         result["error"] = p.stderr or ""
         result["exit_code"] = p.returncode
     except subprocess.TimeoutExpired:
@@ -389,7 +374,7 @@ def execute_js(code: str, sess: dict) -> dict:
 
 
 def execute_java(code: str, sess: dict) -> dict:
-    """מריץ קוד Java."""
+    """Execute Java code."""
     cleaned = textwrap.dedent(code)
     cleaned = normalize_code(cleaned).strip("\n") + "\n"
     
@@ -406,7 +391,7 @@ def execute_java(code: str, sess: dict) -> dict:
     try:
         tmp_dir = tempfile.mkdtemp()
         
-        # חיפוש שם class
+        # Find class name
         class_name = "Main"
         match = re.search(r'public\s+(?:final\s+|abstract\s+|static\s+)*class\s+(\w+)', cleaned)
         if match:
@@ -416,7 +401,7 @@ def execute_java(code: str, sess: dict) -> dict:
         with open(java_file, "w", encoding="utf-8") as f:
             f.write(cleaned)
         
-        # קומפילציה
+        # Compile
         compile_proc = subprocess.run(
             ["javac", java_file],
             capture_output=True,
@@ -431,7 +416,7 @@ def execute_java(code: str, sess: dict) -> dict:
             result["exit_code"] = compile_proc.returncode
             return result
         
-        # הרצה
+        # Run
         p = subprocess.run(
             ["java", class_name],
             capture_output=True,
@@ -440,7 +425,7 @@ def execute_java(code: str, sess: dict) -> dict:
             cwd=tmp_dir,
             env=sess["env"],
         )
-        result["output"] = truncate(p.stdout or "")
+        result["output"] = truncate(p.stdout or "", MAX_OUTPUT)
         result["error"] = p.stderr or ""
         result["exit_code"] = p.returncode
         
@@ -467,7 +452,7 @@ def execute_java(code: str, sess: dict) -> dict:
 @app.route("/api/session", methods=["GET"])
 @require_auth
 def get_session_info():
-    """מחזיר מידע על הסשן הנוכחי."""
+    """Return current session info."""
     user_id = getattr(request, "user_id", 0)
     sess = get_session(user_id)
     return jsonify({
@@ -480,7 +465,7 @@ def get_session_info():
 @app.route("/api/session/reset", methods=["POST"])
 @require_auth
 def reset_session():
-    """מאפס את הסשן."""
+    """Reset session."""
     user_id = getattr(request, "user_id", 0)
     with webapp_sessions_lock:
         if user_id in webapp_sessions:
@@ -493,16 +478,16 @@ def reset_session():
 @app.route("/api/commands", methods=["GET"])
 @require_auth
 def list_commands():
-    """מחזיר רשימת פקודות מאושרות."""
+    """Return list of allowed commands."""
     return jsonify({
         "commands": sorted(ALLOWED_CMDS),
         "allow_all": ALLOW_ALL_COMMANDS,
     })
 
 
-# ==== הרצה ====
+# ==== Run ====
 def run_server(host="0.0.0.0", port=None):
-    """מריץ את השרת."""
+    """Run the server."""
     port = port or int(os.getenv("WEBAPP_PORT", "8080"))
     debug = os.getenv("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
     app.run(host=host, port=port, debug=debug, threaded=True)
