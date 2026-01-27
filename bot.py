@@ -44,7 +44,7 @@ def _parse_owner_ids(raw: str | None) -> set[int]:
     return owners
 
 OWNER_IDS = _parse_owner_ids(os.getenv("OWNER_ID", "6865105071"))
-TIMEOUT = int(os.getenv("CMD_TIMEOUT", "60"))
+TIMEOUT = int(os.getenv("CMD_TIMEOUT", "180"))
 PIP_TIMEOUT = int(os.getenv("PIP_TIMEOUT", "120"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
 TG_MAX_MESSAGE = int(os.getenv("TG_MAX_MESSAGE", "4000"))
