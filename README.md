@@ -47,7 +47,7 @@ docker build -t myterminal66bot:py311 .
 
 # הרצה (מעביר את הטוקן דרך משתני סביבה)
 docker run --rm -e BOT_TOKEN="$BOT_TOKEN" -e OWNER_ID="$OWNER_ID" \
-  -e CMD_TIMEOUT=60 -e TG_MAX_MESSAGE=4000 \
+  -e CMD_TIMEOUT=180 -e TG_MAX_MESSAGE=4000 \
   --name myterminal66bot myterminal66bot:py311
 ```
 

@@ -7,7 +7,7 @@
   - `BOT_TOKEN`: טוקן הבוט מטלגרם
   - `OWNER_ID`: מזהה/ים של בעלי הבוט (מספר/ים, אפשר פסיקים: `123,456`)
 - אופציונלי:
-  - `CMD_TIMEOUT` (ברירת מחדל 60)
+  - `CMD_TIMEOUT` (ברירת מחדל 180)
   - `TG_MAX_MESSAGE` (ברירת מחדל 4000)
 
 ## הרצה עם Docker (מומלץ לשרת/מחשב אישי)
@@ -19,7 +19,7 @@ docker build -t myterminal66bot:py311 .
 docker run --rm \
   -e BOT_TOKEN="<הכנס_טוקן>" \
   -e OWNER_ID="<הכנס_מזהה>" \
-  -e CMD_TIMEOUT=60 -e TG_MAX_MESSAGE=4000 \
+  -e CMD_TIMEOUT=180 -e TG_MAX_MESSAGE=4000 \
   --name myterminal66bot myterminal66bot:py311
 ```
 
