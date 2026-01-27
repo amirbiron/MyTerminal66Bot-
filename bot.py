@@ -39,7 +39,6 @@ from shared_utils import (
     run_js_blocking,
     run_java_blocking,
     run_shell_blocking,
-    resolve_path,
     handle_builtins,
 )
 
@@ -253,9 +252,6 @@ def get_session(update: Update):
         }
         sessions[chat_id] = sess
     return sess
-
-
-# _resolve_path is imported from shared_utils as resolve_path
 
 
 async def send_output(update: Update, text: str, filename: str = "output.txt"):
@@ -1266,32 +1262,22 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     cleaned = textwrap.dedent(code)
     cleaned = normalize_code(cleaned).strip("\n") + "\n"
 
-    def _exec_in_context(src: str, chat_id: int, _update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    def _exec_with_telegram_context(src: str, chat_id: int, _update: Update, _context: ContextTypes.DEFAULT_TYPE):
+        """Execute Python with Telegram objects available in context."""
         global PY_CONTEXT
-        # אתחול ראשוני של הקשר ההרצה לצ'אט הנוכחי
         ctx = PY_CONTEXT.get(chat_id)
         if ctx is None:
             ctx = {"__builtins__": __builtins__, "__name__": "__main__"}
             PY_CONTEXT[chat_id] = ctx
-        else:
-            ctx.setdefault("__name__", "__main__")
-        # חשיפת אובייקטי טלגרם כדי לאפשר שימוש ישיר בקוד
+        # Expose Telegram objects for direct use in code
         ctx["update"] = _update
         ctx["context"] = _context
-        stdout_buffer = io.StringIO()
-        stderr_buffer = io.StringIO()
-        tb_text = None
-        try:
-            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                exec(src, ctx, ctx)
-        except Exception:
-            tb_text = traceback.format_exc()
-        return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
+        return exec_python_in_context(src, ctx)
 
     try:
         chat_id = _chat_id(update)
         out, err, tb_text = await asyncio.wait_for(
-            asyncio.to_thread(_exec_in_context, cleaned, chat_id, update, _), timeout=TIMEOUT
+            asyncio.to_thread(_exec_with_telegram_context, cleaned, chat_id, update, _), timeout=TIMEOUT
         )
 
         # Attempt dynamic install on ModuleNotFoundError, up to 3 modules per run
@@ -1316,7 +1302,7 @@ async def py_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 break
             attempts += 1
             out, err, tb_text = await asyncio.wait_for(
-                asyncio.to_thread(_exec_in_context, cleaned, chat_id, update, _),
+                asyncio.to_thread(_exec_with_telegram_context, cleaned, chat_id, update, _),
                 timeout=TIMEOUT,
             )
 
@@ -1579,24 +1565,17 @@ async def py_run_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     cleaned = textwrap.dedent(code_joined)
     cleaned = normalize_code(cleaned).strip("\n") + "\n"
 
-    def _exec_in_context(src: str, chat: int):
+    def _exec_basic(src: str, chat: int):
+        """Execute Python in shared context without Telegram objects."""
         global PY_CONTEXT
         ctx = PY_CONTEXT.get(chat)
         if ctx is None:
             ctx = {"__builtins__": __builtins__}
             PY_CONTEXT[chat] = ctx
-        stdout_buffer = io.StringIO()
-        stderr_buffer = io.StringIO()
-        tb_text = None
-        try:
-            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                exec(src, ctx, ctx)
-        except Exception:
-            tb_text = traceback.format_exc()
-        return stdout_buffer.getvalue(), stderr_buffer.getvalue(), tb_text
+        return exec_python_in_context(src, ctx)
 
     try:
-        out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
+        out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_basic, cleaned, chat_id), timeout=TIMEOUT)
 
         # התקנה דינמית עבור ModuleNotFoundError (עד 3 ניסיונות)
         attempts = 0
@@ -1619,7 +1598,7 @@ async def py_run_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ כשל בהתקנת '{missing_mod}' (קוד {e.returncode})")
                 break
             attempts += 1
-            out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_in_context, cleaned, chat_id), timeout=TIMEOUT)
+            out, err, tb_text = await asyncio.wait_for(asyncio.to_thread(_exec_basic, cleaned, chat_id), timeout=TIMEOUT)
 
         resp_parts = []
         if out.strip():

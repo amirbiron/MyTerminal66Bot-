@@ -39,12 +39,8 @@ def run_webapp_in_thread():
 def run_bot_in_main():
     """Run the Telegram bot in the main thread (required for signal handlers)."""
     print("🤖 Starting Telegram Bot...")
-    try:
-        import bot
-        bot.main()
-    except Exception as e:
-        print(f"❌ Bot error: {e}")
-        raise
+    import bot
+    bot.main()
 
 
 def run_webapp_only():
@@ -67,7 +63,14 @@ def main():
     args = parser.parse_args()
     
     if args.bot_only:
-        run_bot_in_main()
+        try:
+            run_bot_in_main()
+        except KeyboardInterrupt:
+            print("\n⏹️ Shutting down...")
+            sys.exit(0)
+        except Exception as e:
+            print(f"❌ Bot crashed: {e}")
+            sys.exit(1)
         return
     
     if args.web_only:
