@@ -30,9 +30,6 @@ from telegram.error import NetworkError, TimedOut, Conflict, BadRequest
 from shared_utils import (
     DEFAULT_OWNER_ID,
     parse_owner_ids,
-    parse_cmds_string,
-    DEFAULT_ALLOWED_CMDS,
-    ALLOWED_CMDS_FILE,
     load_allowed_cmds,
     save_allowed_cmds,
     normalize_code,
@@ -42,6 +39,8 @@ from shared_utils import (
     run_js_blocking,
     run_java_blocking,
     run_shell_blocking,
+    resolve_path,
+    handle_builtins,
 )
 
 # ==== תצורה ====
@@ -136,12 +135,6 @@ def _trim_for_message(text: str) -> str:
     if len(text) > TG_MAX_MESSAGE:
         return text[:TG_MAX_MESSAGE]
     return text
-
-
-# Aliases for shared execution functions (for backwards compatibility)
-_run_shell_blocking = run_shell_blocking
-_run_js_blocking = run_js_blocking
-_run_java_blocking = run_java_blocking
 
 
 def _make_refresh_markup(token: str) -> InlineKeyboardMarkup:
@@ -262,13 +255,7 @@ def get_session(update: Update):
     return sess
 
 
-def _resolve_path(base_cwd: str, target: str) -> str:
-    if target == "-":
-        return base_cwd
-    p = os.path.expanduser(target)
-    if not os.path.isabs(p):
-        p = os.path.abspath(os.path.join(base_cwd, p))
-    return p
+# _resolve_path is imported from shared_utils as resolve_path
 
 
 async def send_output(update: Update, text: str, filename: str = "output.txt"):
@@ -318,59 +305,7 @@ async def send_output(update: Update, text: str, filename: str = "output.txt"):
 # Load allowlist from file at import time (fallback to ENV/default already set)
 load_allowed_cmds_from_file()
 
-
-def handle_builtins(sess, cmdline: str):
-    """
-    תומך בפקודות cd/export/unset אם הפקודה פשוטה (ללא ; || && | \n).
-    אם טופל – מחזיר מחרוזת תגובה. אם לא – None.
-    """
-    if any(x in cmdline for x in (";", "&&", "||", "|", "\n")):
-        return None
-    try:
-        parts = shlex.split(cmdline, posix=True)
-    except ValueError:
-        return "❗ שגיאת פרסינג"
-    if not parts:
-        return "❗ אין פקודה"
-
-    cmd = parts[0]
-
-    if cmd == "cd":
-        target = parts[1] if len(parts) > 1 else (sess["env"].get("HOME") or os.path.expanduser("~"))
-        new_path = _resolve_path(sess["cwd"], target)
-        if os.path.isdir(new_path):
-            sess["cwd"] = new_path
-            return f"📁 cwd: {new_path}"
-        return f"❌ תיקייה לא נמצאה: {target}"
-
-    if cmd == "export":
-        # export A=1 B=2 ; export A ; export (לרשימת כל המשתנים)
-        if len(parts) == 1:
-            return "\n".join([f"PWD={sess['cwd']}"] + [f"{k}={v}" for k, v in sorted(sess["env"].items())])
-        out_lines = []
-        for tok in parts[1:]:
-            if "=" not in tok:
-                val = sess["env"].get(tok)
-                out_lines.append(f"{tok}={val if val is not None else ''}")
-                continue
-            k, v = tok.split("=", 1)
-            sess["env"][k] = v
-            out_lines.append(f"set {k}={v}")
-        return "\n".join(out_lines)
-
-    if cmd == "unset":
-        if len(parts) == 1:
-            return "❗ שימוש: unset VAR [VAR2 ...]"
-        out_lines = []
-        for tok in parts[1:]:
-            if tok in sess["env"]:
-                sess["env"].pop(tok, None)
-                out_lines.append(f"unset {tok}")
-            else:
-                out_lines.append(f"{tok} לא מוגדר")
-        return "\n".join(out_lines)
-
-    return None
+# handle_builtins is imported from shared_utils
 
 
 # ==== lifecycle ====
@@ -888,7 +823,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             cleaned = normalize_code(cleaned).strip("\n") + "\n"
             try:
                 sess = _get_inline_session(str(user_id))
-                p = await asyncio.to_thread(_run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+                p = await asyncio.to_thread(run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
                 out = (p.stdout or "").rstrip()
                 err = (p.stderr or "").rstrip()
                 parts_out = [cleaned.rstrip() + "\n\n"]
@@ -908,7 +843,7 @@ async def on_chosen_inline_result(update: Update, _: ContextTypes.DEFAULT_TYPE):
             cleaned = normalize_code(cleaned).strip("\n") + "\n"
             try:
                 sess = _get_inline_session(str(user_id))
-                p = await asyncio.to_thread(_run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+                p = await asyncio.to_thread(run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
                 out = (p.stdout or "").rstrip()
                 err = (p.stderr or "").rstrip()
                 parts_out = [cleaned.rstrip() + "\n\n"]
@@ -1096,7 +1031,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
             sess = _get_inline_session(str(user_id))
             try:
                 shell_exec = SHELL_EXECUTABLE or "/bin/bash"
-                p = await asyncio.to_thread(_run_shell_blocking, shell_exec, q, sess["cwd"], sess["env"], TIMEOUT)
+                p = await asyncio.to_thread(run_shell_blocking, shell_exec, q, sess["cwd"], sess["env"], TIMEOUT)
                 out = p.stdout or ""
                 err = p.stderr or ""
                 header = f"$ {q}\n\n"
@@ -1130,7 +1065,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         cleaned = normalize_code(cleaned).strip("\n") + "\n"
         try:
             sess = _get_inline_session(str(user_id))
-            p = await asyncio.to_thread(_run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+            p = await asyncio.to_thread(run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
             out = (p.stdout or "").rstrip()
             err = (p.stderr or "").rstrip()
             parts_out = [cleaned.rstrip() + "\n\n"]
@@ -1150,7 +1085,7 @@ async def handle_refresh_callback(update: Update, _: ContextTypes.DEFAULT_TYPE):
         cleaned = normalize_code(cleaned).strip("\n") + "\n"
         try:
             sess = _get_inline_session(str(user_id))
-            p = await asyncio.to_thread(_run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+            p = await asyncio.to_thread(run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
             out = (p.stdout or "").rstrip()
             err = (p.stderr or "").rstrip()
             parts_out = [cleaned.rstrip() + "\n\n"]
@@ -1437,7 +1372,7 @@ async def js_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     sess = get_session(update)
 
     try:
-        p = await asyncio.to_thread(_run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+        p = await asyncio.to_thread(run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
         out = (p.stdout or "").rstrip()
         err = (p.stderr or "").rstrip()
         parts = [cleaned.rstrip() + "\n\n"]
@@ -1471,7 +1406,7 @@ async def java_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE):
     sess = get_session(update)
 
     try:
-        p = await asyncio.to_thread(_run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+        p = await asyncio.to_thread(run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
         out = (p.stdout or "").rstrip()
         err = (p.stderr or "").rstrip()
         parts = [cleaned.rstrip() + "\n\n"]

@@ -324,13 +324,30 @@ def execute_python(code: str, user_id: int) -> dict:
     return result
 
 
-def execute_js(code: str, sess: dict) -> dict:
-    """Execute JavaScript code with Node.js."""
+def _execute_external_code(
+    code: str,
+    sess: dict,
+    exec_type: str,
+    run_func,
+    not_found_msg: str,
+    extra_timeout: int = 5
+) -> dict:
+    """
+    Common execution logic for external languages (JS, Java).
+    
+    Args:
+        code: Source code to execute
+        sess: Session dict with cwd and env
+        exec_type: Type string ('js' or 'java')
+        run_func: The blocking execution function to call
+        not_found_msg: Error message when runtime is not found
+        extra_timeout: Extra seconds for thread timeout (default 5, use 10 for Java compilation)
+    """
     cleaned = textwrap.dedent(code)
     cleaned = normalize_code(cleaned).strip("\n") + "\n"
     
     result = {
-        "type": "js",
+        "type": exec_type,
         "code": cleaned,
         "output": "",
         "error": "",
@@ -339,9 +356,9 @@ def execute_js(code: str, sess: dict) -> dict:
     }
     
     try:
-        future = executor.submit(run_js_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
+        future = executor.submit(run_func, cleaned, sess["cwd"], sess["env"], TIMEOUT)
         try:
-            p = future.result(timeout=TIMEOUT + 5)
+            p = future.result(timeout=TIMEOUT + extra_timeout)
             result["output"] = truncate(p.stdout or "", MAX_OUTPUT)
             result["error"] = p.stderr or ""
             result["exit_code"] = p.returncode
@@ -353,51 +370,27 @@ def execute_js(code: str, sess: dict) -> dict:
         result["error"] = f"Timeout ({TIMEOUT}s)"
         result["exit_code"] = -1
     except FileNotFoundError:
-        result["error"] = "Node.js not found"
+        result["error"] = not_found_msg
         result["exit_code"] = -1
     except Exception as e:
         result["error"] = str(e)
         result["exit_code"] = -1
     
     return result
+
+
+def execute_js(code: str, sess: dict) -> dict:
+    """Execute JavaScript code with Node.js."""
+    return _execute_external_code(
+        code, sess, "js", run_js_blocking, "Node.js not found", extra_timeout=5
+    )
 
 
 def execute_java(code: str, sess: dict) -> dict:
     """Execute Java code."""
-    cleaned = textwrap.dedent(code)
-    cleaned = normalize_code(cleaned).strip("\n") + "\n"
-    
-    result = {
-        "type": "java",
-        "code": cleaned,
-        "output": "",
-        "error": "",
-        "exit_code": 0,
-        "timestamp": time.time(),
-    }
-    
-    try:
-        future = executor.submit(run_java_blocking, cleaned, sess["cwd"], sess["env"], TIMEOUT)
-        try:
-            p = future.result(timeout=TIMEOUT + 10)  # Extra time for compilation
-            result["output"] = truncate(p.stdout or "", MAX_OUTPUT)
-            result["error"] = p.stderr or ""
-            result["exit_code"] = p.returncode
-        except FuturesTimeoutError:
-            future.cancel()
-            result["error"] = f"Timeout ({TIMEOUT}s)"
-            result["exit_code"] = -1
-    except subprocess.TimeoutExpired:
-        result["error"] = f"Timeout ({TIMEOUT}s)"
-        result["exit_code"] = -1
-    except FileNotFoundError:
-        result["error"] = "Java not found"
-        result["exit_code"] = -1
-    except Exception as e:
-        result["error"] = str(e)
-        result["exit_code"] = -1
-    
-    return result
+    return _execute_external_code(
+        code, sess, "java", run_java_blocking, "Java not found", extra_timeout=10
+    )
 
 
 @app.route("/api/session", methods=["GET"])
