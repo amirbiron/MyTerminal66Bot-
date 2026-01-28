@@ -12,13 +12,10 @@ import os
 import sys
 import io
 import re
-import pty
 import json
 import time
 import hmac
 import shlex
-import struct
-import select
 import signal
 import hashlib
 import textwrap
@@ -479,6 +476,9 @@ def validate_ws_auth(ws) -> int | None:
         return None
 
 
+import uuid as _uuid_module  # For generating unique session IDs
+
+
 def _close_pty_session_internal(session: dict):
     """
     Close PTY session resources (internal helper, no locking).
@@ -514,7 +514,7 @@ def create_pty_session(user_id: int) -> dict:
     sess = get_session(user_id)
     
     # Close existing session first (outside of lock to avoid deadlock)
-    close_pty_session(user_id)
+    close_pty_session_by_user(user_id)
     
     # Create PTY with proper cleanup on failure
     master_fd = None
@@ -533,7 +533,6 @@ def create_pty_session(user_id: int) -> dict:
                 os.setsid()
                 
                 # Set controlling terminal
-                import fcntl
                 fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
                 
                 # Duplicate slave to stdin/stdout/stderr
@@ -569,7 +568,12 @@ def create_pty_session(user_id: int) -> dict:
             os.close(slave_fd)
             slave_fd = None  # Mark as closed
             
+            # Generate unique session ID to handle multiple connections per user
+            session_id = str(_uuid_module.uuid4())
+            
             pty_session = {
+                "session_id": session_id,
+                "user_id": user_id,
                 "master_fd": master_fd,
                 "pid": pid,
                 "created_at": time.time(),
@@ -595,11 +599,33 @@ def create_pty_session(user_id: int) -> dict:
         raise
 
 
-def close_pty_session(user_id: int):
-    """Close PTY session for user."""
+def close_pty_session_by_user(user_id: int):
+    """Close PTY session for user (used when creating new session)."""
     with pty_sessions_lock:
         session = pty_sessions.pop(user_id, None)
     
+    _close_pty_session_internal(session)
+
+
+def close_pty_session(session: dict):
+    """
+    Close a specific PTY session.
+    Only removes from dict if it's still the current session for the user.
+    This prevents closing a newer session when an old connection disconnects.
+    """
+    if not session:
+        return
+    
+    session_id = session.get("session_id")
+    user_id = session.get("user_id")
+    
+    with pty_sessions_lock:
+        # Only remove from dict if this is still the current session
+        current = pty_sessions.get(user_id)
+        if current and current.get("session_id") == session_id:
+            pty_sessions.pop(user_id, None)
+    
+    # Always close the session resources
     _close_pty_session_internal(session)
 
 
@@ -614,8 +640,11 @@ def resize_pty(master_fd: int, rows: int, cols: int):
         pass
 
 
-# Import termios for PTY operations
+# Import PTY-related modules (Unix only)
 try:
+    import pty
+    import struct
+    import select
     import termios
     import fcntl
     PTY_AVAILABLE = True
@@ -669,7 +698,6 @@ def ws_terminal(ws):
         master_fd = pty_session["master_fd"]
         
         # Set non-blocking mode
-        import fcntl
         flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
         fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
         
@@ -751,8 +779,8 @@ def ws_terminal(ws):
             reader_running = False
     
     finally:
-        # Cleanup PTY session
-        close_pty_session(user_id)
+        # Cleanup this specific PTY session (not by user_id to avoid race condition)
+        close_pty_session(pty_session)
 
 
 @app.route("/api/pty/close", methods=["POST"])
@@ -760,7 +788,7 @@ def ws_terminal(ws):
 def close_pty():
     """Close PTY session for current user."""
     user_id = getattr(request, "user_id", 0)
-    close_pty_session(user_id)
+    close_pty_session_by_user(user_id)
     return jsonify({"status": "ok", "message": "PTY session closed"})
 
 
