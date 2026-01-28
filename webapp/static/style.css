@@ -661,12 +661,31 @@ body {
     background: transparent;
     color: var(--tg-theme-hint-color);
     cursor: pointer;
-    opacity: 0;
+    opacity: 0.4;  /* Visible by default for touch devices */
     transition: all var(--transition-fast);
 }
 
-.output-entry:hover .copy-btn {
-    opacity: 1;
+/* On devices with hover capability, start hidden and show on hover */
+@media (hover: hover) {
+    .copy-btn {
+        opacity: 0;
+    }
+    
+    .output-entry:hover .copy-btn {
+        opacity: 1;
+    }
+}
+
+/* On touch/mobile, always show with subtle opacity */
+@media (hover: none) {
+    .copy-btn {
+        opacity: 0.5;
+    }
+    
+    .copy-btn:active {
+        opacity: 1;
+        background: rgba(255, 255, 255, 0.15);
+    }
 }
 
 .copy-btn:hover {
