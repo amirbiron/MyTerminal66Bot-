@@ -479,10 +479,30 @@ def validate_ws_auth(ws) -> int | None:
         return None
 
 
-def get_pty_session(user_id: int) -> dict | None:
-    """Get existing PTY session for user."""
-    with pty_sessions_lock:
-        return pty_sessions.get(user_id)
+def _close_pty_session_internal(session: dict):
+    """
+    Close PTY session resources (internal helper, no locking).
+    """
+    if not session:
+        return
+    
+    try:
+        os.close(session["master_fd"])
+    except Exception:
+        pass
+    
+    try:
+        os.kill(session["pid"], signal.SIGTERM)
+        # Give it time to terminate gracefully
+        time.sleep(0.1)
+        os.kill(session["pid"], signal.SIGKILL)
+    except Exception:
+        pass
+    
+    try:
+        os.waitpid(session["pid"], os.WNOHANG)
+    except Exception:
+        pass
 
 
 def create_pty_session(user_id: int) -> dict:
@@ -493,60 +513,86 @@ def create_pty_session(user_id: int) -> dict:
     # Get user session for cwd/env
     sess = get_session(user_id)
     
-    # Create PTY
-    master_fd, slave_fd = pty.openpty()
+    # Close existing session first (outside of lock to avoid deadlock)
+    close_pty_session(user_id)
     
-    # Fork process
-    pid = os.fork()
+    # Create PTY with proper cleanup on failure
+    master_fd = None
+    slave_fd = None
     
-    if pid == 0:
-        # Child process
-        os.close(master_fd)
-        os.setsid()
+    try:
+        master_fd, slave_fd = pty.openpty()
         
-        # Set controlling terminal
-        import fcntl
-        fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+        # Fork process
+        pid = os.fork()
         
-        # Duplicate slave to stdin/stdout/stderr
-        os.dup2(slave_fd, 0)
-        os.dup2(slave_fd, 1)
-        os.dup2(slave_fd, 2)
+        if pid == 0:
+            # Child process
+            try:
+                os.close(master_fd)
+                os.setsid()
+                
+                # Set controlling terminal
+                import fcntl
+                fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+                
+                # Duplicate slave to stdin/stdout/stderr
+                os.dup2(slave_fd, 0)
+                os.dup2(slave_fd, 1)
+                os.dup2(slave_fd, 2)
+                
+                if slave_fd > 2:
+                    os.close(slave_fd)
+                
+                # Change to session cwd
+                try:
+                    os.chdir(sess["cwd"])
+                except Exception:
+                    pass
+                
+                # Set environment
+                env = sess["env"].copy()
+                env["TERM"] = "xterm-256color"
+                env["COLORTERM"] = "truecolor"
+                
+                # Execute shell (this replaces the process)
+                os.execvpe(shell, [shell], env)
+            except Exception:
+                # If execvpe fails, terminate child immediately
+                os._exit(1)
+            
+            # Should never reach here, but just in case
+            os._exit(1)
         
-        if slave_fd > 2:
+        else:
+            # Parent process
             os.close(slave_fd)
-        
-        # Change to session cwd
-        try:
-            os.chdir(sess["cwd"])
-        except Exception:
-            pass
-        
-        # Set environment
-        env = sess["env"].copy()
-        env["TERM"] = "xterm-256color"
-        env["COLORTERM"] = "truecolor"
-        
-        # Execute shell
-        os.execvpe(shell, [shell], env)
+            slave_fd = None  # Mark as closed
+            
+            pty_session = {
+                "master_fd": master_fd,
+                "pid": pid,
+                "created_at": time.time(),
+            }
+            
+            with pty_sessions_lock:
+                pty_sessions[user_id] = pty_session
+            
+            return pty_session
     
-    else:
-        # Parent process
-        os.close(slave_fd)
-        
-        pty_session = {
-            "master_fd": master_fd,
-            "pid": pid,
-            "created_at": time.time(),
-        }
-        
-        with pty_sessions_lock:
-            # Close existing session if any
-            if user_id in pty_sessions:
-                close_pty_session(user_id)
-            pty_sessions[user_id] = pty_session
-        
-        return pty_session
+    except Exception:
+        # Clean up file descriptors on failure
+        if master_fd is not None:
+            try:
+                os.close(master_fd)
+            except Exception:
+                pass
+        if slave_fd is not None:
+            try:
+                os.close(slave_fd)
+            except Exception:
+                pass
+        raise
 
 
 def close_pty_session(user_id: int):
@@ -554,24 +600,7 @@ def close_pty_session(user_id: int):
     with pty_sessions_lock:
         session = pty_sessions.pop(user_id, None)
     
-    if session:
-        try:
-            os.close(session["master_fd"])
-        except Exception:
-            pass
-        
-        try:
-            os.kill(session["pid"], signal.SIGTERM)
-            # Give it time to terminate gracefully
-            time.sleep(0.1)
-            os.kill(session["pid"], signal.SIGKILL)
-        except Exception:
-            pass
-        
-        try:
-            os.waitpid(session["pid"], os.WNOHANG)
-        except Exception:
-            pass
+    _close_pty_session_internal(session)
 
 
 def resize_pty(master_fd: int, rows: int, cols: int):
@@ -601,6 +630,15 @@ def ws_terminal(ws):
         ws.send(json.dumps({
             "type": "error",
             "message": "PTY not available on this system"
+        }))
+        return
+    
+    # PTY provides full shell access - only allow if ALLOW_ALL_COMMANDS is enabled
+    # This prevents bypassing command restrictions via PTY
+    if not ALLOW_ALL_COMMANDS:
+        ws.send(json.dumps({
+            "type": "error",
+            "message": "PTY terminal requires ALLOW_ALL_COMMANDS=1 (full shell access)"
         }))
         return
     

@@ -305,7 +305,10 @@ function fitPtyTerminal() {
 }
 
 function connectPtyWebSocket() {
-    if (ptyWebSocket && ptyWebSocket.readyState === WebSocket.OPEN) {
+    // Check for existing connection or connection in progress
+    if (ptyWebSocket && 
+        (ptyWebSocket.readyState === WebSocket.OPEN || 
+         ptyWebSocket.readyState === WebSocket.CONNECTING)) {
         return;
     }
     
@@ -424,9 +427,15 @@ function updatePtyStatus(status, message = '') {
 }
 
 function reconnectPty() {
+    // Set max attempts to prevent auto-reconnect from racing with manual reconnect
+    ptyReconnectAttempts = MAX_RECONNECT_ATTEMPTS;
+    
     if (ptyWebSocket) {
         ptyWebSocket.close();
+        ptyWebSocket = null;
     }
+    
+    // Reset reconnect counter for manual reconnect
     ptyReconnectAttempts = 0;
     
     // Clear terminal
