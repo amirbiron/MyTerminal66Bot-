@@ -519,6 +519,7 @@ def create_pty_session(user_id: int) -> dict:
     # Create PTY with proper cleanup on failure
     master_fd = None
     slave_fd = None
+    child_pid = None  # Track child process for cleanup
     
     try:
         master_fd, slave_fd = pty.openpty()
@@ -564,7 +565,9 @@ def create_pty_session(user_id: int) -> dict:
             os._exit(1)
         
         else:
-            # Parent process
+            # Parent process - track child for potential cleanup
+            child_pid = pid
+            
             os.close(slave_fd)
             slave_fd = None  # Mark as closed
             
@@ -582,6 +585,9 @@ def create_pty_session(user_id: int) -> dict:
             with pty_sessions_lock:
                 pty_sessions[user_id] = pty_session
             
+            # Clear child_pid to prevent cleanup since session was created successfully
+            child_pid = None
+            
             return pty_session
     
     except Exception:
@@ -594,6 +600,18 @@ def create_pty_session(user_id: int) -> dict:
         if slave_fd is not None:
             try:
                 os.close(slave_fd)
+            except Exception:
+                pass
+        # Kill orphaned child process if fork succeeded but something else failed
+        if child_pid is not None:
+            try:
+                os.kill(child_pid, signal.SIGTERM)
+                time.sleep(0.1)
+                os.kill(child_pid, signal.SIGKILL)
+            except Exception:
+                pass
+            try:
+                os.waitpid(child_pid, os.WNOHANG)
             except Exception:
                 pass
         raise
@@ -629,17 +647,6 @@ def close_pty_session(session: dict):
     _close_pty_session_internal(session)
 
 
-def resize_pty(master_fd: int, rows: int, cols: int):
-    """Resize PTY window."""
-    try:
-        import fcntl
-        import termios
-        winsize = struct.pack("HHHH", rows, cols, 0, 0)
-        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
-    except Exception:
-        pass
-
-
 # Import PTY-related modules (Unix only)
 try:
     import pty
@@ -650,6 +657,17 @@ try:
     PTY_AVAILABLE = True
 except ImportError:
     PTY_AVAILABLE = False
+
+
+def resize_pty(master_fd: int, rows: int, cols: int):
+    """Resize PTY window."""
+    if not PTY_AVAILABLE:
+        return
+    try:
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+    except Exception:
+        pass
 
 
 @sock.route("/ws/terminal")
