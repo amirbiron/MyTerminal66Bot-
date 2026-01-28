@@ -379,6 +379,12 @@ function connectPtyWebSocket() {
                         console.log('PTY session ended');
                         ptyConnected = false;
                         updatePtyStatus('disconnected');
+                        // Close WebSocket so reconnect works when switching tabs
+                        if (ptyWebSocket) {
+                            ptySkipAutoReconnect = true;  // Don't auto-reconnect on exit
+                            ptyWebSocket.close();
+                            ptyWebSocket = null;
+                        }
                         break;
                     
                     case 'pong':
