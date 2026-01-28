@@ -30,6 +30,9 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from flask import Flask, request, jsonify, send_from_directory
 from flask_sock import Sock
 
+# Activity reporter
+from activity_reporter import create_reporter
+
 # Import shared utilities
 from shared_utils import (
     DEFAULT_OWNER_ID,
@@ -56,6 +59,15 @@ TIMEOUT = int(os.getenv("CMD_TIMEOUT", "60"))
 MAX_OUTPUT = int(os.getenv("MAX_OUTPUT", "10000"))
 SHELL_EXECUTABLE = os.getenv("SHELL_EXECUTABLE") or ("/bin/bash" if os.path.exists("/bin/bash") else None)
 ALLOW_ALL_COMMANDS = os.getenv("ALLOW_ALL_COMMANDS", "").lower() in ("1", "true", "yes", "on")
+
+# Activity reporter (keep secrets in ENV, not in code)
+# Expected ENV: ACTIVITY_MONGODB_URI
+_mongodb_uri = os.getenv("ACTIVITY_MONGODB_URI", "").strip()
+reporter = create_reporter(
+    mongodb_uri=_mongodb_uri,
+    service_id="srv-d5skev0gjchc73b100h0",
+    service_name="MyTerminal66Bot_Web",
+)
 
 # Load allowed commands (respects ENV and file like bot.py)
 ALLOWED_CMDS = load_allowed_cmds()
@@ -145,6 +157,7 @@ def require_auth(f):
         if DEV_MODE:
             request.user_id = 0
             request.user_data = {"dev_mode": True}
+            reporter.report_activity(request.user_id)
             return f(*args, **kwargs)
         
         # Production mode - require BOT_TOKEN
@@ -167,6 +180,7 @@ def require_auth(f):
         
         request.user_id = user_id
         request.user_data = user
+        reporter.report_activity(request.user_id)
         return f(*args, **kwargs)
     return decorated
 
@@ -704,6 +718,8 @@ def ws_terminal(ws):
             "message": "Authentication failed"
         }))
         return
+
+    reporter.report_activity(user_id)
     
     # Send auth success
     ws.send(json.dumps({"type": "auth_ok", "user_id": user_id}))
