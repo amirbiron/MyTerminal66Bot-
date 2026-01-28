@@ -104,6 +104,7 @@ gunicorn -w 4 -b 0.0.0.0:8080 webapp_server:app
 | `WEBAPP_PORT` | פורט לשרת ה-Web | 8080 |
 | `WEBAPP_HOST` | כתובת לשרת ה-Web | 0.0.0.0 |
 | `FLASK_DEBUG` | מצב Debug של Flask | false |
+| `ACTIVITY_MONGODB_URI` | חיבור MongoDB לדיווח פעילות (אופציונלי) | - |
 
 ### מבנה קבצים
 
