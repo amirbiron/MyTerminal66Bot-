@@ -23,4 +23,6 @@ pygame>=2.5,<3
 requests>=2.32,<3
 aiohttp>=3.9,<4
 Flask>=3.0,<4
+flask-sock>=0.7,<1
+simple-websocket>=1.0,<2
 gunicorn>=22.0,<24
