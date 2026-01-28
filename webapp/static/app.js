@@ -689,15 +689,11 @@ function copyOutputEntry(entryId) {
     const entry = document.getElementById(entryId);
     if (!entry) return;
     
-    const commandEl = entry.querySelector('.output-cmd-text');
     const resultEl = entry.querySelector('.output-result');
     
     let textToCopy = '';
-    if (commandEl) {
-        textToCopy += commandEl.textContent + '\n';
-    }
     if (resultEl) {
-        textToCopy += resultEl.textContent;
+        textToCopy = resultEl.textContent;
     }
     
     copyToClipboard(textToCopy.trim(), 'הפלט הועתק');
