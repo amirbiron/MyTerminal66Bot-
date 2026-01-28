@@ -7,6 +7,7 @@ Usage:
     python run_all.py              # Run both
     python run_all.py --bot-only   # Run only the bot
     python run_all.py --web-only   # Run only the web server
+    python run_all.py --web-only --dev  # Run web server in dev mode (no auth)
 
 Environment Variables:
     BOT_TOKEN       - Telegram Bot Token (required for bot)
@@ -14,6 +15,7 @@ Environment Variables:
     WEBAPP_URL      - URL of the Web App (for bot to link to)
     WEBAPP_PORT     - Port for the web server (default: 8080)
     WEBAPP_HOST     - Host for the web server (default: 0.0.0.0)
+    WEBAPP_DEV_MODE - Set to 1 to skip authentication (for development)
 """
 
 import os
@@ -60,7 +62,13 @@ def main():
     parser = argparse.ArgumentParser(description="Run Terminal Bot and/or Web App")
     parser.add_argument("--bot-only", action="store_true", help="Run only the Telegram bot")
     parser.add_argument("--web-only", action="store_true", help="Run only the Web App server")
+    parser.add_argument("--dev", action="store_true", help="Enable dev mode (skip auth for web app)")
     args = parser.parse_args()
+    
+    # Set dev mode environment variable if --dev flag is used
+    if args.dev:
+        os.environ["WEBAPP_DEV_MODE"] = "1"
+        print("🔧 Dev mode enabled - authentication disabled")
     
     if args.bot_only:
         try:

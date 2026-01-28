@@ -141,18 +141,18 @@ def require_auth(f):
     def decorated(*args, **kwargs):
         init_data = request.headers.get("X-Telegram-Init-Data", "")
         
-        # Block access if BOT_TOKEN is not set (unless explicit DEV_MODE)
+        # Development mode - skip authentication entirely
+        if DEV_MODE:
+            request.user_id = 0
+            request.user_data = {"dev_mode": True}
+            return f(*args, **kwargs)
+        
+        # Production mode - require BOT_TOKEN
         if not BOT_TOKEN:
-            if DEV_MODE:
-                # Development mode - allow unauthenticated access with warning
-                request.user_id = 0
-                request.user_data = {"dev_mode": True}
-                return f(*args, **kwargs)
-            else:
-                return jsonify({
-                    "error": "Server misconfigured",
-                    "message": "BOT_TOKEN not set. Set WEBAPP_DEV_MODE=1 for development."
-                }), 503
+            return jsonify({
+                "error": "Server misconfigured",
+                "message": "BOT_TOKEN not set. Set WEBAPP_DEV_MODE=1 for development."
+            }), 503
         
         data = validate_telegram_webapp_data(init_data)
         if not data:
@@ -444,10 +444,17 @@ def validate_ws_auth(ws) -> int | None:
     Validate WebSocket authentication.
     Returns user_id if valid, None otherwise.
     """
-    # Try to get init_data from first message or subprotocol
+    # Development mode - skip authentication
+    if DEV_MODE:
+        # Still need to receive and discard auth message to keep protocol consistent
+        try:
+            ws.receive(timeout=5)
+        except Exception:
+            pass
+        return 0
+    
+    # Production mode - require BOT_TOKEN
     if not BOT_TOKEN:
-        if DEV_MODE:
-            return 0  # Development mode
         return None
     
     try:
