@@ -16,6 +16,9 @@ let ptyWebSocket = null;
 let ptyFitAddon = null;
 let ptyConnected = false;
 let ptyReconnectAttempts = 0;
+let ptyPermanentError = false;  // True if error is permanent (no point reconnecting)
+let ptyLastError = '';          // Store last error message
+let ptySkipAutoReconnect = false;  // Skip auto-reconnect for manual reconnect
 const MAX_RECONNECT_ATTEMPTS = 5;
 
 // Prompt symbols per language
@@ -338,6 +341,8 @@ function connectPtyWebSocket() {
                     case 'auth_ok':
                         ptyConnected = true;
                         ptyReconnectAttempts = 0;
+                        ptyPermanentError = false;
+                        ptyLastError = '';
                         updatePtyStatus('connected');
                         // Request initial resize
                         if (ptyTerminal) {
@@ -358,6 +363,15 @@ function connectPtyWebSocket() {
                     
                     case 'error':
                         console.error('PTY error:', msg.message);
+                        ptyLastError = msg.message;
+                        // Mark permanent errors that shouldn't trigger reconnect
+                        if (msg.message && (
+                            msg.message.includes('ALLOW_ALL_COMMANDS') ||
+                            msg.message.includes('not available') ||
+                            msg.message.includes('Authentication failed')
+                        )) {
+                            ptyPermanentError = true;
+                        }
                         updatePtyStatus('error', msg.message);
                         break;
                     
@@ -379,15 +393,27 @@ function connectPtyWebSocket() {
         ptyWebSocket.onclose = () => {
             console.log('PTY WebSocket closed');
             ptyConnected = false;
-            updatePtyStatus('disconnected');
             
-            // Auto-reconnect if in PTY mode
-            if (currentLang === 'pty' && ptyReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                ptyReconnectAttempts++;
-                const delay = Math.min(1000 * Math.pow(2, ptyReconnectAttempts), 30000);
-                console.log(`Reconnecting in ${delay}ms (attempt ${ptyReconnectAttempts})`);
-                setTimeout(connectPtyWebSocket, delay);
+            // Don't overwrite error status with disconnected
+            if (!ptyLastError) {
+                updatePtyStatus('disconnected');
             }
+            
+            // Skip auto-reconnect if:
+            // - Manual reconnect in progress (ptySkipAutoReconnect)
+            // - Permanent error occurred
+            // - Not in PTY mode
+            // - Max attempts reached
+            if (ptySkipAutoReconnect || ptyPermanentError || 
+                currentLang !== 'pty' || ptyReconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                ptySkipAutoReconnect = false;  // Reset flag
+                return;
+            }
+            
+            ptyReconnectAttempts++;
+            const delay = Math.min(1000 * Math.pow(2, ptyReconnectAttempts), 30000);
+            console.log(`Reconnecting in ${delay}ms (attempt ${ptyReconnectAttempts})`);
+            setTimeout(connectPtyWebSocket, delay);
         };
         
         ptyWebSocket.onerror = (error) => {
@@ -427,23 +453,26 @@ function updatePtyStatus(status, message = '') {
 }
 
 function reconnectPty() {
-    // Set max attempts to prevent auto-reconnect from racing with manual reconnect
-    ptyReconnectAttempts = MAX_RECONNECT_ATTEMPTS;
+    // Set flag to skip auto-reconnect from onclose handler
+    ptySkipAutoReconnect = true;
+    
+    // Reset error state for manual reconnect
+    ptyPermanentError = false;
+    ptyLastError = '';
+    ptyReconnectAttempts = 0;
     
     if (ptyWebSocket) {
         ptyWebSocket.close();
         ptyWebSocket = null;
     }
     
-    // Reset reconnect counter for manual reconnect
-    ptyReconnectAttempts = 0;
-    
     // Clear terminal
     if (ptyTerminal) {
         ptyTerminal.clear();
     }
     
-    connectPtyWebSocket();
+    // Small delay to ensure onclose fires before we reconnect
+    setTimeout(connectPtyWebSocket, 50);
 }
 
 function copyPtyOutput() {

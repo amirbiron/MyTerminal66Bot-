@@ -664,75 +664,94 @@ def ws_terminal(ws):
         }))
         return
     
-    master_fd = pty_session["master_fd"]
-    
-    # Set non-blocking mode
-    import fcntl
-    flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
-    fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-    
-    # Read from PTY and send to WebSocket
-    def read_pty():
-        while True:
-            try:
-                readable, _, _ = select.select([master_fd], [], [], 0.1)
-                if master_fd in readable:
-                    try:
-                        data = os.read(master_fd, 4096)
-                        if data:
-                            ws.send(json.dumps({
-                                "type": "output",
-                                "data": data.decode("utf-8", errors="replace")
-                            }))
-                        else:
-                            # EOF
-                            ws.send(json.dumps({"type": "exit"}))
-                            break
-                    except OSError:
-                        ws.send(json.dumps({"type": "exit"}))
-                        break
-            except Exception:
-                break
-    
-    # Start PTY reader thread
-    reader_thread = Thread(target=read_pty, daemon=True)
-    reader_thread.start()
-    
-    # Main loop - receive from WebSocket and write to PTY
+    # From here on, ensure cleanup happens via try-finally
     try:
-        while True:
-            msg = ws.receive()
-            if msg is None:
-                break
-            
+        master_fd = pty_session["master_fd"]
+        
+        # Set non-blocking mode
+        import fcntl
+        flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+        fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        
+        # Lock for thread-safe WebSocket sends
+        ws_send_lock = Lock()
+        reader_running = True
+        
+        def safe_ws_send(data):
+            """Thread-safe WebSocket send."""
             try:
-                data = json.loads(msg)
-                msg_type = data.get("type")
+                with ws_send_lock:
+                    ws.send(data)
+            except Exception:
+                pass
+        
+        # Read from PTY and send to WebSocket
+        def read_pty():
+            nonlocal reader_running
+            while reader_running:
+                try:
+                    readable, _, _ = select.select([master_fd], [], [], 0.1)
+                    if master_fd in readable:
+                        try:
+                            data = os.read(master_fd, 4096)
+                            if data:
+                                safe_ws_send(json.dumps({
+                                    "type": "output",
+                                    "data": data.decode("utf-8", errors="replace")
+                                }))
+                            else:
+                                # EOF
+                                safe_ws_send(json.dumps({"type": "exit"}))
+                                break
+                        except OSError:
+                            safe_ws_send(json.dumps({"type": "exit"}))
+                            break
+                except Exception:
+                    break
+        
+        # Start PTY reader thread
+        reader_thread = Thread(target=read_pty, daemon=True)
+        reader_thread.start()
+        
+        # Main loop - receive from WebSocket and write to PTY
+        try:
+            while True:
+                msg = ws.receive()
+                if msg is None:
+                    break
                 
-                if msg_type == "input":
-                    # Write input to PTY
-                    input_data = data.get("data", "")
-                    if input_data:
-                        os.write(master_fd, input_data.encode("utf-8"))
-                
-                elif msg_type == "resize":
-                    # Resize PTY
-                    rows = data.get("rows", 24)
-                    cols = data.get("cols", 80)
-                    resize_pty(master_fd, rows, cols)
-                
-                elif msg_type == "ping":
-                    ws.send(json.dumps({"type": "pong"}))
-                
-            except json.JSONDecodeError:
-                # Treat as raw input
-                os.write(master_fd, msg.encode("utf-8"))
-    
-    except Exception:
-        pass
+                try:
+                    data = json.loads(msg)
+                    msg_type = data.get("type")
+                    
+                    if msg_type == "input":
+                        # Write input to PTY
+                        input_data = data.get("data", "")
+                        if input_data:
+                            os.write(master_fd, input_data.encode("utf-8"))
+                    
+                    elif msg_type == "resize":
+                        # Resize PTY
+                        rows = data.get("rows", 24)
+                        cols = data.get("cols", 80)
+                        resize_pty(master_fd, rows, cols)
+                    
+                    elif msg_type == "ping":
+                        safe_ws_send(json.dumps({"type": "pong"}))
+                    
+                except json.JSONDecodeError:
+                    # Treat as raw input
+                    os.write(master_fd, msg.encode("utf-8"))
+        
+        except Exception:
+            pass
+        
+        finally:
+            # Stop reader thread
+            reader_running = False
     
     finally:
-        # Cleanup
+        # Cleanup PTY session
         close_pty_session(user_id)
 
 
