@@ -1,0 +1,12 @@
+{
+  "name": "MyTerminal66Bot",
+  "repo": "https://github.com/amirbiron/MyTerminal66Bot-",
+  "tags": ["python", "telegram-bot", "flask", "websocket", "docker", "remote-execution", "terminal"],
+  "highlights": [
+    "בוט טלגרם להרצת קוד מרחוק בPython, JavaScript, Java ו-Bash",
+    "Web App טלגרם עם טרמינל PTY אינטראקטיבי דרך WebSocket",
+    "ניהול הרשאות מבוסס OWNER_ID עם רשימת פקודות מותרות",
+    "Docker image מוכן עם ספריות מדעיות מותקנות מראש",
+    "Activity reporting ל-MongoDB ו-Inline mode לשיתוף תוצאות"
+  ]
+}
